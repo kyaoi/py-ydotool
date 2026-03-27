@@ -1,0 +1,5 @@
+[tools]
+just = "latest"
+lefthook = "latest"
+python = "3.12"
+uv = "latest"

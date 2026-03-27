@@ -1,0 +1,35 @@
+[project]
+name = "py-ydotool"
+version = "0.1.0"
+description = "A small Python wrapper around ydotool for Wayland automation."
+readme = "README.md"
+authors = [
+    { name = "kyaoi" }
+]
+requires-python = ">=3.12"
+dependencies = []
+keywords = ["wayland", "ydotool", "automation", "keyboard", "mouse"]
+
+[project.urls]
+Repository = "https://github.com/kyaoi/py-ydotool"
+Issues = "https://github.com/kyaoi/py-ydotool/issues"
+
+[build-system]
+requires = ["uv_build>=0.11.2,<0.12"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.15.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
