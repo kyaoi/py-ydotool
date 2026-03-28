@@ -58,6 +58,7 @@ class Key:
     DOT = 52
     SLASH = 53
     RIGHT_SHIFT = 54
+    KP_ASTERISK = 55
     LEFT_ALT = 56
     SPACE = 57
     CAPSLOCK = 58
@@ -74,10 +75,26 @@ class Key:
     F10 = 68
     NUMLOCK = 69
     SCROLLLOCK = 70
+    KP_7 = 71
+    KP_8 = 72
+    KP_9 = 73
+    KP_MINUS = 74
+    KP_4 = 75
+    KP_5 = 76
+    KP_6 = 77
+    KP_PLUS = 78
+    KP_1 = 79
+    KP_2 = 80
+    KP_3 = 81
+    KP_0 = 82
+    KP_DOT = 83
     F11 = 87
     F12 = 88
 
+    KP_ENTER = 96
     RIGHT_CTRL = 97
+    KP_SLASH = 98
+    SYSRQ = 99
     RIGHT_ALT = 100
     HOME = 102
     UP = 103
@@ -89,8 +106,13 @@ class Key:
     PAGEDOWN = 109
     INSERT = 110
     DELETE = 111
+    PAUSE = 119
     LEFT_META = 125
     RIGHT_META = 126
+    COMPOSE = 127
+    MENU = 139
+
+    PRINT_SCREEN = SYSRQ
 
     CTRL = LEFT_CTRL
     SHIFT = LEFT_SHIFT
