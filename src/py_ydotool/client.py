@@ -87,6 +87,16 @@ class PyYDoTool:
     def _event(keycode: int, pressed: bool) -> str:
         return f"{keycode}:{1 if pressed else 0}"
 
+    @staticmethod
+    def _mouse_event(button: str, *, down: bool = False, up: bool = False) -> str:
+        base = int(button, 16) & 0x3F
+        mask = 0
+        if down:
+            mask |= 0x40
+        if up:
+            mask |= 0x80
+        return f"0x{base | mask:02X}"
+
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
 
@@ -148,6 +158,12 @@ class PyYDoTool:
         time.sleep(interval)
         self.click(button)
 
+    def mouse_down(self, button: str = MouseButton.LEFT) -> None:
+        self._run("click", self._mouse_event(button, down=True))
+
+    def mouse_up(self, button: str = MouseButton.LEFT) -> None:
+        self._run("click", self._mouse_event(button, up=True))
+
     def right_click(self) -> None:
         self.click(MouseButton.RIGHT)
 
@@ -159,6 +175,20 @@ class PyYDoTool:
 
     def move_rel(self, dx: int, dy: int) -> None:
         self._run("mousemove", str(dx), str(dy))
+
+    def drag_to(self, x: int, y: int, button: str = MouseButton.LEFT) -> None:
+        self.mouse_down(button)
+        try:
+            self.move_to(x, y)
+        finally:
+            self.mouse_up(button)
+
+    def drag_rel(self, dx: int, dy: int, button: str = MouseButton.LEFT) -> None:
+        self.mouse_down(button)
+        try:
+            self.move_rel(dx, dy)
+        finally:
+            self.mouse_up(button)
 
     def copy(self, text: str) -> None:
         backend = self._get_clipboard_backend()

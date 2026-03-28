@@ -24,8 +24,8 @@ class Key:
     T = 20
     Y = 21
     U = 22
-    I = 23  # noqa: E741
-    O = 24  # noqa: E741
+    I = 23
+    O = 24
     P = 25
     LEFTBRACE = 26
     RIGHTBRACE = 27

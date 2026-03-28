@@ -5,7 +5,7 @@ A small Python wrapper around `ydotool` for Linux automation, with Wayland-frien
 ## Features
 
 - keyboard input helpers
-- mouse click helpers
+- mouse click and drag helpers
 - clipboard helpers with backend auto-detection
 - simple Python API for personal automation scripts
 

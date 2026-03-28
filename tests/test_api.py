@@ -1,5 +1,7 @@
 from subprocess import CompletedProcess
 
+import pytest
+
 from py_ydotool import Key, MouseButton, PyYDoTool
 from py_ydotool.clipboard import ClipboardBackend
 
@@ -150,6 +152,110 @@ def test_click_helpers(monkeypatch) -> None:
         ("click", "0xC0"),
         ("click", "0xC1"),
         ("click", "0xC2"),
+    ]
+
+
+def test_mouse_down_and_mouse_up(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(self: PyYDoTool, *args: str) -> CompletedProcess[str]:
+        calls.append(args)
+        return CompletedProcess(["ydotool", *args], 0, "", "")
+
+    monkeypatch.setattr(PyYDoTool, "_run", fake_run)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.mouse_down()
+    tool.mouse_up()
+    tool.mouse_down(MouseButton.RIGHT)
+    tool.mouse_up(MouseButton.MIDDLE)
+
+    assert calls == [
+        ("click", "0x40"),
+        ("click", "0x80"),
+        ("click", "0x41"),
+        ("click", "0x82"),
+    ]
+
+
+def test_drag_to_calls_down_move_up(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_mouse_down(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("mouse_down", button))
+
+    def fake_move_to(self: PyYDoTool, x: int, y: int) -> None:
+        calls.append(("move_to", (x, y)))
+
+    def fake_mouse_up(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("mouse_up", button))
+
+    monkeypatch.setattr(PyYDoTool, "mouse_down", fake_mouse_down)
+    monkeypatch.setattr(PyYDoTool, "move_to", fake_move_to)
+    monkeypatch.setattr(PyYDoTool, "mouse_up", fake_mouse_up)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.drag_to(100, 200)
+
+    assert calls == [
+        ("mouse_down", MouseButton.LEFT),
+        ("move_to", (100, 200)),
+        ("mouse_up", MouseButton.LEFT),
+    ]
+
+
+def test_drag_rel_calls_down_move_up(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_mouse_down(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("mouse_down", button))
+
+    def fake_move_rel(self: PyYDoTool, dx: int, dy: int) -> None:
+        calls.append(("move_rel", (dx, dy)))
+
+    def fake_mouse_up(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("mouse_up", button))
+
+    monkeypatch.setattr(PyYDoTool, "mouse_down", fake_mouse_down)
+    monkeypatch.setattr(PyYDoTool, "move_rel", fake_move_rel)
+    monkeypatch.setattr(PyYDoTool, "mouse_up", fake_mouse_up)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.drag_rel(-5, 8, MouseButton.RIGHT)
+
+    assert calls == [
+        ("mouse_down", MouseButton.RIGHT),
+        ("move_rel", (-5, 8)),
+        ("mouse_up", MouseButton.RIGHT),
+    ]
+
+
+def test_drag_to_releases_button_when_move_fails(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_mouse_down(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("mouse_down", button))
+
+    def fake_move_to(self: PyYDoTool, x: int, y: int) -> None:
+        calls.append(("move_to", (x, y)))
+        raise RuntimeError("move failed")
+
+    def fake_mouse_up(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("mouse_up", button))
+
+    monkeypatch.setattr(PyYDoTool, "mouse_down", fake_mouse_down)
+    monkeypatch.setattr(PyYDoTool, "move_to", fake_move_to)
+    monkeypatch.setattr(PyYDoTool, "mouse_up", fake_mouse_up)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(RuntimeError, match="move failed"):
+        tool.drag_to(100, 200)
+
+    assert calls == [
+        ("mouse_down", MouseButton.LEFT),
+        ("move_to", (100, 200)),
+        ("mouse_up", MouseButton.LEFT),
     ]
 
 
