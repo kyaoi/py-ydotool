@@ -1,0 +1,192 @@
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import time
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+
+from .clipboard import ClipboardBackend, detect_clipboard_backend
+from .exceptions import CommandExecutionError, CommandNotFoundError
+
+
+class MouseButton:
+    LEFT = "0xC0"
+    RIGHT = "0xC1"
+    MIDDLE = "0xC2"
+
+
+@dataclass(slots=True)
+class PyYDoTool:
+    socket_path: str | None = None
+    check_commands_on_init: bool = True
+    type_delay_ms: int = 0
+    clipboard_backend: str | None = None
+    _env: dict[str, str] = field(init=False, repr=False)
+    _clipboard: ClipboardBackend | None = field(init=False, repr=False, default=None)
+
+    def __post_init__(self) -> None:
+        self.socket_path = self.socket_path or os.environ.get(
+            "YDOTOOL_SOCKET",
+            "/tmp/.ydotool_socket",
+        )
+        self._env = os.environ.copy()
+        self._env["YDOTOOL_SOCKET"] = self.socket_path
+
+        if self.check_commands_on_init:
+            self._ensure_command("ydotool")
+
+    def _ensure_command(self, name: str) -> None:
+        if shutil.which(name) is None:
+            raise CommandNotFoundError(f"Required command not found: {name}")
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                ["ydotool", *args],
+                text=True,
+                capture_output=True,
+                check=True,
+                env=self._env,
+            )
+        except FileNotFoundError as exc:
+            raise CommandNotFoundError("Required command not found: ydotool") from exc
+        except subprocess.CalledProcessError as exc:
+            raise CommandExecutionError(
+                f"ydotool failed: {' '.join(exc.cmd)}\nstdout: {exc.stdout}\nstderr: {exc.stderr}"
+            ) from exc
+
+    def _run_command(
+        self,
+        command: list[str],
+        *,
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                command,
+                text=True,
+                input=input_text,
+                capture_output=True,
+                check=True,
+            )
+        except FileNotFoundError as exc:
+            raise CommandNotFoundError(f"Required command not found: {command[0]}") from exc
+        except subprocess.CalledProcessError as exc:
+            raise CommandExecutionError(
+                f"command failed: {' '.join(exc.cmd)}\nstdout: {exc.stdout}\nstderr: {exc.stderr}"
+            ) from exc
+
+    def _get_clipboard_backend(self) -> ClipboardBackend:
+        if self._clipboard is None:
+            self._clipboard = detect_clipboard_backend(self.clipboard_backend)
+        return self._clipboard
+
+    @staticmethod
+    def _event(keycode: int, pressed: bool) -> str:
+        return f"{keycode}:{1 if pressed else 0}"
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def key_down(self, keycode: int) -> None:
+        self._run("key", self._event(keycode, True))
+
+    def key_up(self, keycode: int) -> None:
+        self._run("key", self._event(keycode, False))
+
+    def press(self, keycode: int) -> None:
+        self._run(
+            "key",
+            self._event(keycode, True),
+            self._event(keycode, False),
+        )
+
+    def press_many(self, keycodes: Iterable[int], interval: float = 0.0) -> None:
+        for keycode in keycodes:
+            self.press(keycode)
+            if interval > 0:
+                time.sleep(interval)
+
+    def hotkey(self, *keycodes: int) -> None:
+        pressed: list[int] = []
+        try:
+            for keycode in keycodes:
+                self.key_down(keycode)
+                pressed.append(keycode)
+        finally:
+            for keycode in reversed(pressed):
+                self.key_up(keycode)
+
+    def type(self, text: str) -> None:
+        args = ["type"]
+        if self.type_delay_ms > 0:
+            args.extend(["--key-delay", str(self.type_delay_ms)])
+        args.append(text)
+        self._run(*args)
+
+    write = type
+
+    def type_or_paste(
+        self,
+        text: str,
+        *,
+        prefer_paste: bool = False,
+        paste_threshold: int = 128,
+    ) -> None:
+        if prefer_paste or "\n" in text or len(text) >= paste_threshold:
+            self.paste_text(text)
+        else:
+            self.write(text)
+
+    def click(self, button: str = MouseButton.LEFT) -> None:
+        self._run("click", button)
+
+    def double_click(self, button: str = MouseButton.LEFT, interval: float = 0.1) -> None:
+        self.click(button)
+        time.sleep(interval)
+        self.click(button)
+
+    def right_click(self) -> None:
+        self.click(MouseButton.RIGHT)
+
+    def middle_click(self) -> None:
+        self.click(MouseButton.MIDDLE)
+
+    def move_to(self, x: int, y: int) -> None:
+        self._run("mousemove", "--absolute", str(x), str(y))
+
+    def move_rel(self, dx: int, dy: int) -> None:
+        self._run("mousemove", str(dx), str(dy))
+
+    def copy(self, text: str) -> None:
+        backend = self._get_clipboard_backend()
+        self._run_command(list(backend.copy_command), input_text=text)
+
+    def get_clipboard(self) -> str:
+        backend = self._get_clipboard_backend()
+        result = self._run_command(list(backend.paste_command))
+        return result.stdout
+
+    def paste_text(self, text: str) -> None:
+        from .keys import Key
+
+        self.copy(text)
+        self.hotkey(Key.CTRL, Key.V)
+
+    def select_all(self) -> None:
+        from .keys import Key
+
+        self.hotkey(Key.CTRL, Key.A)
+
+    def copy_selected(self, wait: float = 0.05) -> str:
+        from .keys import Key
+
+        self.hotkey(Key.CTRL, Key.C)
+        if wait > 0:
+            time.sleep(wait)
+        return self.get_clipboard()
+
+    def position(self) -> tuple[int, int]:
+        raise NotImplementedError("Current mouse position is not supported yet.")

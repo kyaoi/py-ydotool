@@ -1,5 +1,5 @@
-from py_ydotool import __name__
+from py_ydotool import PyYDoTool
 
 
-def test_import() -> None:
-    assert __name__ == "py_ydotool"
+def test_package_import() -> None:
+    assert PyYDoTool is not None

@@ -21,6 +21,8 @@ test:
 
 check: lint test
 
+ci: lint test
+
 build:
   uv build
 
