@@ -443,3 +443,135 @@ def test_copy_selected_uses_hotkey_and_clipboard(monkeypatch) -> None:
         ("hotkey", (Key.CTRL, Key.C)),
         ("get_clipboard", None),
     ]
+
+
+def test_hold_keys_calls_down_then_up(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_key_down(self: PyYDoTool, keycode: int) -> None:
+        calls.append(("down", str(keycode)))
+
+    def fake_key_up(self: PyYDoTool, keycode: int) -> None:
+        calls.append(("up", str(keycode)))
+
+    monkeypatch.setattr(PyYDoTool, "key_down", fake_key_down)
+    monkeypatch.setattr(PyYDoTool, "key_up", fake_key_up)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    with tool.hold_keys(Key.CTRL, Key.SHIFT, Key.ALT):
+        calls.append(("inside",))
+
+    assert calls == [
+        ("down", "29"),
+        ("down", "42"),
+        ("down", "56"),
+        ("inside",),
+        ("up", "56"),
+        ("up", "42"),
+        ("up", "29"),
+    ]
+
+
+def test_hold_keys_releases_on_error(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_key_down(self: PyYDoTool, keycode: int) -> None:
+        calls.append(("down", str(keycode)))
+
+    def fake_key_up(self: PyYDoTool, keycode: int) -> None:
+        calls.append(("up", str(keycode)))
+
+    monkeypatch.setattr(PyYDoTool, "key_down", fake_key_down)
+    monkeypatch.setattr(PyYDoTool, "key_up", fake_key_up)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with tool.hold_keys(Key.CTRL, Key.C):
+            raise RuntimeError("boom")
+
+    assert calls == [
+        ("down", "29"),
+        ("down", "46"),
+        ("up", "46"),
+        ("up", "29"),
+    ]
+
+
+def test_hold_button_calls_down_then_up(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_mouse_down(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("down", button))
+
+    def fake_mouse_up(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("up", button))
+
+    monkeypatch.setattr(PyYDoTool, "mouse_down", fake_mouse_down)
+    monkeypatch.setattr(PyYDoTool, "mouse_up", fake_mouse_up)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    with tool.hold_button(MouseButton.RIGHT):
+        calls.append(("inside", MouseButton.RIGHT))
+
+    assert calls == [
+        ("down", MouseButton.RIGHT),
+        ("inside", MouseButton.RIGHT),
+        ("up", MouseButton.RIGHT),
+    ]
+
+
+def test_hold_button_releases_on_error(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_mouse_down(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("down", button))
+
+    def fake_mouse_up(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("up", button))
+
+    monkeypatch.setattr(PyYDoTool, "mouse_down", fake_mouse_down)
+    monkeypatch.setattr(PyYDoTool, "mouse_up", fake_mouse_up)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with tool.hold_button(MouseButton.MIDDLE):
+            raise RuntimeError("boom")
+
+    assert calls == [
+        ("down", MouseButton.MIDDLE),
+        ("up", MouseButton.MIDDLE),
+    ]
+
+
+def test_click_with_modifiers_holds_then_clicks(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _HoldContext:
+        def __enter__(self) -> None:
+            calls.append(("hold_keys", (Key.CTRL, Key.SHIFT)))
+            return None
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            calls.append(("hold_keys_done", (Key.CTRL, Key.SHIFT)))
+            return None
+
+    def fake_hold_keys(self: PyYDoTool, *keycodes: int):
+        assert keycodes == (Key.CTRL, Key.SHIFT)
+        return _HoldContext()
+
+    def fake_click(self: PyYDoTool, button: str = MouseButton.LEFT, **_: object) -> None:
+        calls.append(("click", button))
+
+    monkeypatch.setattr(PyYDoTool, "hold_keys", fake_hold_keys)
+    monkeypatch.setattr(PyYDoTool, "click", fake_click)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.click_with_modifiers(Key.CTRL, Key.SHIFT, button=MouseButton.RIGHT)
+
+    assert calls == [
+        ("hold_keys", (Key.CTRL, Key.SHIFT)),
+        ("click", MouseButton.RIGHT),
+        ("hold_keys_done", (Key.CTRL, Key.SHIFT)),
+    ]

@@ -9,6 +9,7 @@ A small Python wrapper around `ydotool` for Wayland automation.
 - extended mouse button constants
 - clipboard helpers with backend auto-detection
 - simple Python API for personal automation scripts
+- context managers for holding keys and mouse buttons
 
 ## Requirements
 

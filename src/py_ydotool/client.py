@@ -4,7 +4,8 @@ import os
 import shutil
 import subprocess
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from .clipboard import ClipboardBackend, detect_clipboard_backend
@@ -124,15 +125,21 @@ class PyYDoTool:
             if interval > 0:
                 time.sleep(interval)
 
-    def hotkey(self, *keycodes: int) -> None:
+    @contextmanager
+    def hold_keys(self, *keycodes: int) -> Iterator[None]:
         pressed: list[int] = []
         try:
             for keycode in keycodes:
                 self.key_down(keycode)
                 pressed.append(keycode)
+            yield
         finally:
             for keycode in reversed(pressed):
                 self.key_up(keycode)
+
+    def hotkey(self, *keycodes: int) -> None:
+        with self.hold_keys(*keycodes):
+            return None
 
     def type(self, text: str) -> None:
         args = ["type"]
@@ -209,6 +216,18 @@ class PyYDoTool:
     def task_click(self) -> None:
         self.click(MouseButton.TASK)
 
+    @contextmanager
+    def hold_button(self, button: str = MouseButton.LEFT) -> Iterator[None]:
+        self.mouse_down(button)
+        try:
+            yield
+        finally:
+            self.mouse_up(button)
+
+    def click_with_modifiers(self, *keycodes: int, button: str = MouseButton.LEFT) -> None:
+        with self.hold_keys(*keycodes):
+            self.click(button)
+
     def move_to(self, x: int, y: int) -> None:
         self._run("mousemove", "--absolute", str(x), str(y))
 
@@ -216,18 +235,12 @@ class PyYDoTool:
         self._run("mousemove", str(dx), str(dy))
 
     def drag_to(self, x: int, y: int, button: str = MouseButton.LEFT) -> None:
-        self.mouse_down(button)
-        try:
+        with self.hold_button(button):
             self.move_to(x, y)
-        finally:
-            self.mouse_up(button)
 
     def drag_rel(self, dx: int, dy: int, button: str = MouseButton.LEFT) -> None:
-        self.mouse_down(button)
-        try:
+        with self.hold_button(button):
             self.move_rel(dx, dy)
-        finally:
-            self.mouse_up(button)
 
     def copy(self, text: str) -> None:
         backend = self._get_clipboard_backend()
