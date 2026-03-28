@@ -15,6 +15,11 @@ class MouseButton:
     LEFT = "0xC0"
     RIGHT = "0xC1"
     MIDDLE = "0xC2"
+    SIDE = "0xC3"
+    EXTRA = "0xC4"
+    FORWARD = "0xC5"
+    BACK = "0xC6"
+    TASK = "0xC7"
 
 
 @dataclass(slots=True)
@@ -150,13 +155,32 @@ class PyYDoTool:
         else:
             self.write(text)
 
-    def click(self, button: str = MouseButton.LEFT) -> None:
-        self._run("click", button)
+    def click(
+        self,
+        button: str = MouseButton.LEFT,
+        *,
+        repeat: int | None = None,
+        next_delay_ms: int | None = None,
+    ) -> None:
+        args = ["click"]
+        if next_delay_ms is not None:
+            args.extend(["--next-delay", str(next_delay_ms)])
+        if repeat is not None:
+            args.extend(["--repeat", str(repeat)])
+        args.append(button)
+        self._run(*args)
+
+    def click_many(
+        self,
+        repeat: int,
+        button: str = MouseButton.LEFT,
+        *,
+        next_delay_ms: int | None = None,
+    ) -> None:
+        self.click(button, repeat=repeat, next_delay_ms=next_delay_ms)
 
     def double_click(self, button: str = MouseButton.LEFT, interval: float = 0.1) -> None:
-        self.click(button)
-        time.sleep(interval)
-        self.click(button)
+        self.click_many(2, button=button, next_delay_ms=int(interval * 1000))
 
     def mouse_down(self, button: str = MouseButton.LEFT) -> None:
         self._run("click", self._mouse_event(button, down=True))
@@ -169,6 +193,21 @@ class PyYDoTool:
 
     def middle_click(self) -> None:
         self.click(MouseButton.MIDDLE)
+
+    def side_click(self) -> None:
+        self.click(MouseButton.SIDE)
+
+    def extra_click(self) -> None:
+        self.click(MouseButton.EXTRA)
+
+    def forward_click(self) -> None:
+        self.click(MouseButton.FORWARD)
+
+    def back_click(self) -> None:
+        self.click(MouseButton.BACK)
+
+    def task_click(self) -> None:
+        self.click(MouseButton.TASK)
 
     def move_to(self, x: int, y: int) -> None:
         self._run("mousemove", "--absolute", str(x), str(y))

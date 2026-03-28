@@ -1,17 +1,18 @@
 # py-ydotool
 
-A small Python wrapper around `ydotool` for Linux automation, with Wayland-friendly defaults.
+A small Python wrapper around `ydotool` for Wayland automation.
 
 ## Features
 
 - keyboard input helpers
-- mouse click and drag helpers
+- mouse click, repeat-click, button press, and drag helpers
+- extended mouse button constants
 - clipboard helpers with backend auto-detection
 - simple Python API for personal automation scripts
 
 ## Requirements
 
-This library requires:
+This library is intended for Linux environments and requires:
 
 - `ydotool`
 - `ydotoold`
@@ -39,11 +40,14 @@ uv sync
 ## Example
 
 ```python
-from py_ydotool import Key, PyYDoTool
+from py_ydotool import MouseButton, PyYDoTool
 
 gui = PyYDoTool()
-gui.write("hello")
-gui.press(Key.ENTER)
+gui.click_many(3, next_delay_ms=50)
+gui.forward_click()
+gui.mouse_down(MouseButton.LEFT)
+gui.move_rel(100, 0)
+gui.mouse_up(MouseButton.LEFT)
 ```
 
 ## Status

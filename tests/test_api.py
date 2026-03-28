@@ -134,6 +134,41 @@ def test_type_or_paste_prefers_paste_for_multiline(monkeypatch) -> None:
     assert calls == [("paste_text", "hello\nworld")]
 
 
+def test_click_many_passes_repeat_and_delay(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(self: PyYDoTool, *args: str) -> CompletedProcess[str]:
+        calls.append(args)
+        return CompletedProcess(["ydotool", *args], 0, "", "")
+
+    monkeypatch.setattr(PyYDoTool, "_run", fake_run)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.click_many(3, next_delay_ms=50)
+
+    assert calls == [("click", "--next-delay", "50", "--repeat", "3", "0xC0")]
+
+
+def test_double_click_uses_click_many(monkeypatch) -> None:
+    calls: list[tuple[int, str, int | None]] = []
+
+    def fake_click_many(
+        self: PyYDoTool,
+        repeat: int,
+        button: str = MouseButton.LEFT,
+        *,
+        next_delay_ms: int | None = None,
+    ) -> None:
+        calls.append((repeat, button, next_delay_ms))
+
+    monkeypatch.setattr(PyYDoTool, "click_many", fake_click_many)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.double_click(MouseButton.RIGHT, interval=0.25)
+
+    assert calls == [(2, MouseButton.RIGHT, 250)]
+
+
 def test_click_helpers(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
 
@@ -147,11 +182,21 @@ def test_click_helpers(monkeypatch) -> None:
     tool.click()
     tool.right_click()
     tool.middle_click()
+    tool.side_click()
+    tool.extra_click()
+    tool.forward_click()
+    tool.back_click()
+    tool.task_click()
 
     assert calls == [
         ("click", "0xC0"),
         ("click", "0xC1"),
         ("click", "0xC2"),
+        ("click", "0xC3"),
+        ("click", "0xC4"),
+        ("click", "0xC5"),
+        ("click", "0xC6"),
+        ("click", "0xC7"),
     ]
 
 
