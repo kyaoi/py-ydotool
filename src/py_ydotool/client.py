@@ -242,6 +242,41 @@ class PyYDoTool:
         with self.hold_button(button):
             self.move_rel(dx, dy)
 
+    def click_at(
+        self,
+        x: int,
+        y: int,
+        button: str = MouseButton.LEFT,
+        *,
+        repeat: int | None = None,
+        next_delay_ms: int | None = None,
+    ) -> None:
+        self.move_to(x, y)
+        self.click(button, repeat=repeat, next_delay_ms=next_delay_ms)
+
+    def double_click_at(
+        self, x: int, y: int, button: str = MouseButton.LEFT, interval: float = 0.1
+    ) -> None:
+        self.move_to(x, y)
+        self.double_click(button, interval=interval)
+
+    def right_click_at(self, x: int, y: int) -> None:
+        self.click_at(x, y, MouseButton.RIGHT)
+
+    def middle_click_at(self, x: int, y: int) -> None:
+        self.click_at(x, y, MouseButton.MIDDLE)
+
+    def drag_between(
+        self,
+        start_x: int,
+        start_y: int,
+        end_x: int,
+        end_y: int,
+        button: str = MouseButton.LEFT,
+    ) -> None:
+        self.move_to(start_x, start_y)
+        self.drag_to(end_x, end_y, button)
+
     def copy(self, text: str) -> None:
         backend = self._get_clipboard_backend()
         self._run_command(list(backend.copy_command), input_text=text)
@@ -251,11 +286,14 @@ class PyYDoTool:
         result = self._run_command(list(backend.paste_command))
         return result.stdout
 
-    def paste_text(self, text: str) -> None:
+    def paste(self) -> None:
         from .keys import Key
 
-        self.copy(text)
         self.hotkey(Key.CTRL, Key.V)
+
+    def paste_text(self, text: str) -> None:
+        self.copy(text)
+        self.paste()
 
     def select_all(self) -> None:
         from .keys import Key
@@ -266,6 +304,14 @@ class PyYDoTool:
         from .keys import Key
 
         self.hotkey(Key.CTRL, Key.C)
+        if wait > 0:
+            time.sleep(wait)
+        return self.get_clipboard()
+
+    def cut_selected(self, wait: float = 0.05) -> str:
+        from .keys import Key
+
+        self.hotkey(Key.CTRL, Key.X)
         if wait > 0:
             time.sleep(wait)
         return self.get_clipboard()

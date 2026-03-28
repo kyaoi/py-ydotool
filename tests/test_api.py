@@ -323,6 +323,105 @@ def test_move_helpers(monkeypatch) -> None:
     ]
 
 
+def test_click_at_moves_then_clicks(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_move_to(self: PyYDoTool, x: int, y: int) -> None:
+        calls.append(("move_to", (x, y)))
+
+    def fake_click(
+        self: PyYDoTool,
+        button: str = MouseButton.LEFT,
+        *,
+        repeat: int | None = None,
+        next_delay_ms: int | None = None,
+    ) -> None:
+        calls.append(("click", (button, repeat, next_delay_ms)))
+
+    monkeypatch.setattr(PyYDoTool, "move_to", fake_move_to)
+    monkeypatch.setattr(PyYDoTool, "click", fake_click)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.click_at(10, 20, MouseButton.RIGHT, repeat=2, next_delay_ms=30)
+
+    assert calls == [
+        ("move_to", (10, 20)),
+        ("click", (MouseButton.RIGHT, 2, 30)),
+    ]
+
+
+def test_double_click_at_moves_then_double_clicks(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_move_to(self: PyYDoTool, x: int, y: int) -> None:
+        calls.append(("move_to", (x, y)))
+
+    def fake_double_click(
+        self: PyYDoTool,
+        button: str = MouseButton.LEFT,
+        interval: float = 0.1,
+    ) -> None:
+        calls.append(("double_click", (button, interval)))
+
+    monkeypatch.setattr(PyYDoTool, "move_to", fake_move_to)
+    monkeypatch.setattr(PyYDoTool, "double_click", fake_double_click)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.double_click_at(10, 20, MouseButton.MIDDLE, interval=0.25)
+
+    assert calls == [
+        ("move_to", (10, 20)),
+        ("double_click", (MouseButton.MIDDLE, 0.25)),
+    ]
+
+
+def test_click_at_helpers(monkeypatch) -> None:
+    calls: list[tuple[int, int, str]] = []
+
+    def fake_click_at(
+        self: PyYDoTool,
+        x: int,
+        y: int,
+        button: str = MouseButton.LEFT,
+        *,
+        repeat: int | None = None,
+        next_delay_ms: int | None = None,
+    ) -> None:
+        calls.append((x, y, button))
+
+    monkeypatch.setattr(PyYDoTool, "click_at", fake_click_at)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.right_click_at(1, 2)
+    tool.middle_click_at(3, 4)
+
+    assert calls == [
+        (1, 2, MouseButton.RIGHT),
+        (3, 4, MouseButton.MIDDLE),
+    ]
+
+
+def test_drag_between_moves_then_drags(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_move_to(self: PyYDoTool, x: int, y: int) -> None:
+        calls.append(("move_to", (x, y)))
+
+    def fake_drag_to(self: PyYDoTool, x: int, y: int, button: str = MouseButton.LEFT) -> None:
+        calls.append(("drag_to", (x, y, button)))
+
+    monkeypatch.setattr(PyYDoTool, "move_to", fake_move_to)
+    monkeypatch.setattr(PyYDoTool, "drag_to", fake_drag_to)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.drag_between(1, 2, 10, 20, MouseButton.RIGHT)
+
+    assert calls == [
+        ("move_to", (1, 2)),
+        ("drag_to", (10, 20, MouseButton.RIGHT)),
+    ]
+
+
 def test_press_many(monkeypatch) -> None:
     calls: list[int] = []
 
@@ -410,6 +509,20 @@ def test_paste_text_uses_copy_and_hotkey(monkeypatch) -> None:
     ]
 
 
+def test_paste_uses_hotkey(monkeypatch) -> None:
+    calls: list[tuple[int, ...]] = []
+
+    def fake_hotkey(self: PyYDoTool, *keycodes: int) -> None:
+        calls.append(keycodes)
+
+    monkeypatch.setattr(PyYDoTool, "hotkey", fake_hotkey)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.paste()
+
+    assert calls == [(Key.CTRL, Key.V)]
+
+
 def test_select_all_uses_hotkey(monkeypatch) -> None:
     calls: list[tuple[int, ...]] = []
 
@@ -441,6 +554,27 @@ def test_copy_selected_uses_hotkey_and_clipboard(monkeypatch) -> None:
     assert tool.copy_selected(wait=0.0) == "selected text"
     assert calls == [
         ("hotkey", (Key.CTRL, Key.C)),
+        ("get_clipboard", None),
+    ]
+
+
+def test_cut_selected_uses_hotkey_and_clipboard(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_hotkey(self: PyYDoTool, *keycodes: int) -> None:
+        calls.append(("hotkey", keycodes))
+
+    def fake_get_clipboard(self: PyYDoTool) -> str:
+        calls.append(("get_clipboard", None))
+        return "cut text"
+
+    monkeypatch.setattr(PyYDoTool, "hotkey", fake_hotkey)
+    monkeypatch.setattr(PyYDoTool, "get_clipboard", fake_get_clipboard)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    assert tool.cut_selected(wait=0.0) == "cut text"
+    assert calls == [
+        ("hotkey", (Key.CTRL, Key.X)),
         ("get_clipboard", None),
     ]
 
