@@ -9,7 +9,6 @@ A small Python wrapper around `ydotool` for Wayland automation.
 - extended mouse button constants
 - broad key constant coverage including media, power, and IME-related keys
 - clipboard helpers with backend auto-detection
-- simple Python API for personal automation scripts
 - context managers for holding keys and mouse buttons
 - configurable command timeout for safer automation
 
@@ -40,23 +39,93 @@ pip install "py-ydotool @ git+https://github.com/kyaoi/py-ydotool.git"
 uv sync
 ```
 
-## Example
+## Quick examples
+
+### Type and hotkeys
 
 ```python
-from py_ydotool import MouseButton, PyYDoTool
+from py_ydotool import Key, PyYDoTool
 
 gui = PyYDoTool()
-gui.click_many(3, next_delay_ms=50)
-gui.forward_click()
-gui.mouse_down(MouseButton.LEFT)
-gui.move_rel(100, 0)
-gui.mouse_up(MouseButton.LEFT)
+gui.write("hello")
+gui.press(Key.ENTER)
+gui.hotkey(Key.CTRL, Key.L)
 ```
+
+### Clipboard and paste fallback
+
+```python
+from py_ydotool import PyYDoTool
+
+gui = PyYDoTool(clipboard_backend="wl-clipboard")
+gui.type_or_paste("a short string")
+gui.paste_text("long text that is safer to paste")
+```
+
+### Hold keys and mouse buttons
+
+```python
+from py_ydotool import Key, MouseButton, PyYDoTool
+
+gui = PyYDoTool()
+
+with gui.hold_keys(Key.CTRL, Key.SHIFT):
+    gui.press(Key.T)
+
+with gui.hold_button(MouseButton.LEFT):
+    gui.move_rel(120, 0)
+```
+
+### Coordinate helpers
+
+```python
+from py_ydotool import PyYDoTool
+
+gui = PyYDoTool()
+gui.click_at(300, 200)
+gui.double_click_at(400, 220)
+gui.drag_between(500, 300, 700, 300)
+```
+
+### Safety timeout
+
+```python
+from py_ydotool import CommandTimeoutError, PyYDoTool
+
+gui = PyYDoTool(command_timeout=2.0)
+
+try:
+    gui.get_clipboard()
+except CommandTimeoutError:
+    print("clipboard backend timed out")
+```
+
+## Public API
+
+Top-level exports are:
+
+- `PyYDoTool`
+- `Key`
+- `MouseButton`
+- `ClipboardBackend`
+- `detect_clipboard_backend`
+- `PyYDoToolError`
+- `CommandNotFoundError`
+- `CommandExecutionError`
+- `CommandTimeoutError`
+- `ClipboardUnavailableError`
+- `__version__`
+
+## Unsupported / intentionally missing
+
+These are intentionally not implemented right now:
+
+- `position()`
+- scroll helpers
+- image recognition / screen search
+
+The library stays focused on explicit keyboard, mouse, and clipboard automation built on top of `ydotool`.
 
 ## Status
 
 Early personal project. APIs may change.
-
-## Safety
-
-`PyYDoTool(command_timeout=...)` can be used to avoid hanging forever if `ydotool` or a clipboard backend stops responding.

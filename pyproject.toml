@@ -8,9 +8,20 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = []
-keywords = ["wayland", "ydotool", "automation", "keyboard", "mouse"]
+keywords = ["wayland", "ydotool", "automation", "keyboard", "mouse", "clipboard"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Utilities",
+]
 
 [project.urls]
+Homepage = "https://github.com/kyaoi/py-ydotool"
 Repository = "https://github.com/kyaoi/py-ydotool"
 Issues = "https://github.com/kyaoi/py-ydotool/issues"
 
