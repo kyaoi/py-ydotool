@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from scripts.version_tools import check_repository_version, read_version_file
+from py_ydotool._version_tools import check_repository_version, read_version_file
 
 
 def main() -> int:

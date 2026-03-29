@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 VERSION_FILE = ROOT / "src" / "py_ydotool" / "VERSION"
 PYPROJECT_FILE = ROOT / "pyproject.toml"
 _VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")

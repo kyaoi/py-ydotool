@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from py_ydotool import __version__
-from scripts.version_tools import (
+from py_ydotool._version_tools import (
     evaluate_version_state,
     latest_release_tag,
     normalize_release_tag,
