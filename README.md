@@ -7,6 +7,7 @@ A small Python wrapper around `ydotool` for Wayland automation.
 - keyboard input helpers
 - mouse click, repeat-click, button press, and drag helpers
 - extended mouse button constants
+- broad key constant coverage including media, power, and IME-related keys
 - clipboard helpers with backend auto-detection
 - simple Python API for personal automation scripts
 - context managers for holding keys and mouse buttons

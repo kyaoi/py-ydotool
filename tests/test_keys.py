@@ -135,3 +135,31 @@ def test_media_and_brightness_keys() -> None:
     assert Key.KBDILLUMDOWN == 229
     assert Key.KBDILLUMUP == 230
     assert Key.MICMUTE == 248
+
+
+def test_audio_and_power_keys() -> None:
+    assert Key.MUTE == 113
+    assert Key.VOLUMEDOWN == 114
+    assert Key.VOLUMEUP == 115
+    assert Key.POWER == 116
+
+
+def test_japanese_input_keys() -> None:
+    assert Key.KATAKANA == 90
+    assert Key.HIRAGANA == 91
+    assert Key.HENKAN == 92
+    assert Key.KATAKANAHIRAGANA == 93
+    assert Key.MUHENKAN == 94
+    assert Key.HANGEUL == 122
+    assert Key.HANJA == 123
+    assert Key.YEN == 124
+
+
+def test_media_transport_and_system_keys() -> None:
+    assert Key.EJECTCD == 161
+    assert Key.RECORD == 167
+    assert Key.REWIND == 168
+    assert Key.PHONE == 169
+    assert Key.CONFIG == 171
+    assert Key.PLAYCD == 200
+    assert Key.PAUSECD == 201
