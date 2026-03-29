@@ -84,3 +84,17 @@ def test_replace_pyproject_version_text_allows_same_version() -> None:
     pyproject_text = Path("pyproject.toml").read_text(encoding="utf-8")
     same = replace_pyproject_version_text(pyproject_text, read_version_file())
     assert same == pyproject_text
+
+
+def test_normalize_release_tag_accepts_existing_v_prefix() -> None:
+    assert normalize_release_tag("v1.2.3") == "v1.2.3"
+
+
+def test_evaluate_version_state_accepts_matching_head_tag_without_dirty_bump() -> None:
+    result = evaluate_version_state(
+        version_file_version="0.2.0",
+        pyproject_version="0.2.0",
+        head_tags=["v0.2.0"],
+        repo_tags=["v0.1.0", "v0.2.0"],
+    )
+    assert result.ok is True
