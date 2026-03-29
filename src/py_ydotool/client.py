@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from .clipboard import ClipboardBackend, detect_clipboard_backend
-from .exceptions import CommandExecutionError, CommandNotFoundError
+from .exceptions import CommandExecutionError, CommandNotFoundError, CommandTimeoutError
 
 
 class MouseButton:
@@ -29,6 +29,7 @@ class PyYDoTool:
     check_commands_on_init: bool = True
     type_delay_ms: int = 0
     clipboard_backend: str | None = None
+    command_timeout: float | None = 5.0
     _env: dict[str, str] = field(init=False, repr=False)
     _clipboard: ClipboardBackend | None = field(init=False, repr=False, default=None)
 
@@ -47,7 +48,11 @@ class PyYDoTool:
         if shutil.which(name) is None:
             raise CommandNotFoundError(f"Required command not found: {name}")
 
-    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self,
+        *args: str,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         try:
             return subprocess.run(
                 ["ydotool", *args],
@@ -55,7 +60,13 @@ class PyYDoTool:
                 capture_output=True,
                 check=True,
                 env=self._env,
+                timeout=self.command_timeout if timeout is None else timeout,
             )
+        except subprocess.TimeoutExpired as exc:
+            cmd = exc.cmd if isinstance(exc.cmd, list) else [str(exc.cmd)]
+            raise CommandTimeoutError(
+                f"ydotool timed out after {exc.timeout} seconds: {' '.join(cmd)}"
+            ) from exc
         except FileNotFoundError as exc:
             raise CommandNotFoundError("Required command not found: ydotool") from exc
         except subprocess.CalledProcessError as exc:
@@ -68,6 +79,7 @@ class PyYDoTool:
         command: list[str],
         *,
         input_text: str | None = None,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         try:
             return subprocess.run(
@@ -76,7 +88,13 @@ class PyYDoTool:
                 input=input_text,
                 capture_output=True,
                 check=True,
+                timeout=self.command_timeout if timeout is None else timeout,
             )
+        except subprocess.TimeoutExpired as exc:
+            cmd = exc.cmd if isinstance(exc.cmd, list) else [str(exc.cmd)]
+            raise CommandTimeoutError(
+                f"command timed out after {exc.timeout} seconds: {' '.join(cmd)}"
+            ) from exc
         except FileNotFoundError as exc:
             raise CommandNotFoundError(f"Required command not found: {command[0]}") from exc
         except subprocess.CalledProcessError as exc:

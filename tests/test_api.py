@@ -1,8 +1,9 @@
+import subprocess
 from subprocess import CompletedProcess
 
 import pytest
 
-from py_ydotool import Key, MouseButton, PyYDoTool
+from py_ydotool import CommandTimeoutError, Key, MouseButton, PyYDoTool
 from py_ydotool.clipboard import ClipboardBackend
 
 
@@ -16,6 +17,81 @@ def test_init_without_command_check() -> None:
     tool = PyYDoTool(check_commands_on_init=False)
     assert tool.socket_path is not None
     assert tool.type_delay_ms == 0
+
+
+def test_init_has_default_command_timeout() -> None:
+    tool = PyYDoTool(check_commands_on_init=False)
+    assert tool.command_timeout == 5.0
+
+
+def test_run_uses_configured_timeout(monkeypatch) -> None:
+    seen: list[float | None] = []
+
+    def fake_run(*args, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return CompletedProcess(["ydotool", "key", "28:1", "28:0"], 0, "", "")
+
+    monkeypatch.setattr("py_ydotool.client.subprocess.run", fake_run)
+
+    tool = PyYDoTool(check_commands_on_init=False, command_timeout=1.25)
+    tool.press(Key.ENTER)
+
+    assert seen == [1.25]
+
+
+def test_run_command_uses_configured_timeout(monkeypatch) -> None:
+    seen: list[float | None] = []
+
+    def fake_run(*args, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return CompletedProcess(["paste-cmd"], 0, "clipboard text", "")
+
+    def fake_backend(self: PyYDoTool) -> ClipboardBackend:
+        return ClipboardBackend(
+            name="test",
+            copy_command=("copy-cmd",),
+            paste_command=("paste-cmd",),
+        )
+
+    monkeypatch.setattr("py_ydotool.client.subprocess.run", fake_run)
+    monkeypatch.setattr(PyYDoTool, "_get_clipboard_backend", fake_backend)
+
+    tool = PyYDoTool(check_commands_on_init=False, command_timeout=2.5)
+    tool.get_clipboard()
+
+    assert seen == [2.5]
+
+
+def test_run_timeout_raises_command_timeout_error(monkeypatch) -> None:
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["ydotool", "key", "28:1", "28:0"], timeout=1.0)
+
+    monkeypatch.setattr("py_ydotool.client.subprocess.run", fake_run)
+
+    tool = PyYDoTool(check_commands_on_init=False, command_timeout=1.0)
+
+    with pytest.raises(CommandTimeoutError):
+        tool.press(Key.ENTER)
+
+
+def test_run_command_timeout_raises_command_timeout_error(monkeypatch) -> None:
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["paste-cmd"], timeout=2.0)
+
+    def fake_backend(self: PyYDoTool) -> ClipboardBackend:
+        return ClipboardBackend(
+            name="test",
+            copy_command=("copy-cmd",),
+            paste_command=("paste-cmd",),
+        )
+
+    monkeypatch.setattr("py_ydotool.client.subprocess.run", fake_run)
+    monkeypatch.setattr(PyYDoTool, "_get_clipboard_backend", fake_backend)
+
+    tool = PyYDoTool(check_commands_on_init=False, command_timeout=2.0)
+
+    with pytest.raises(CommandTimeoutError):
+        tool.get_clipboard()
 
 
 def test_press_calls_key_events(monkeypatch) -> None:

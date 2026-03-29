@@ -10,6 +10,7 @@ A small Python wrapper around `ydotool` for Wayland automation.
 - clipboard helpers with backend auto-detection
 - simple Python API for personal automation scripts
 - context managers for holding keys and mouse buttons
+- configurable command timeout for safer automation
 
 ## Requirements
 
@@ -54,3 +55,7 @@ gui.mouse_up(MouseButton.LEFT)
 ## Status
 
 Early personal project. APIs may change.
+
+## Safety
+
+`PyYDoTool(command_timeout=...)` can be used to avoid hanging forever if `ydotool` or a clipboard backend stops responding.

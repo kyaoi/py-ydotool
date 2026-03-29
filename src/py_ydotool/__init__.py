@@ -4,6 +4,7 @@ from .exceptions import (
     ClipboardUnavailableError,
     CommandExecutionError,
     CommandNotFoundError,
+    CommandTimeoutError,
     PyYDoToolError,
 )
 from .keys import Key
@@ -13,6 +14,7 @@ __all__ = [
     "ClipboardUnavailableError",
     "CommandExecutionError",
     "CommandNotFoundError",
+    "CommandTimeoutError",
     "Key",
     "MouseButton",
     "PyYDoTool",

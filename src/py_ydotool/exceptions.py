@@ -12,3 +12,7 @@ class CommandExecutionError(PyYDoToolError):
 
 class ClipboardUnavailableError(PyYDoToolError):
     """Raised when no supported clipboard backend is available."""
+
+
+class CommandTimeoutError(PyYDoToolError):
+    """Raised when an external command exceeds the configured timeout."""
