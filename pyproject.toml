@@ -49,3 +49,9 @@ select = ["E", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "repo: repository-level tests",
+]
+
+[tool.uv.build-backend]
+source-include = ["scripts/*.py"]

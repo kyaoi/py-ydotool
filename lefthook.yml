@@ -13,5 +13,5 @@ pre-commit:
 
 pre-push:
   jobs:
-    - name: test
-      run: just ci
+    - name: release-check
+      run: just release-check

@@ -23,7 +23,19 @@ check: lint test
 
 ci: lint test
 
-release-check: ci build
+version:
+  uv run python scripts/check_version.py --print
+
+version-check:
+  uv run python scripts/check_version.py
+
+set-version version:
+  uv run python scripts/set_version.py {{version}}
+
+tag-version:
+  git tag "v$(uv run python scripts/check_version.py --print)"
+
+release-check: version-check ci build
 
 build:
   uv build

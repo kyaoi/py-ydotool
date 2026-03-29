@@ -11,6 +11,7 @@ A small Python wrapper around `ydotool` for Wayland automation.
 - clipboard helpers with backend auto-detection
 - context managers for holding keys and mouse buttons
 - configurable command timeout for safer automation
+- file-based version management with pre-push release checks
 
 ## Requirements
 
@@ -105,6 +106,31 @@ try:
 except CommandTimeoutError:
     print("clipboard backend timed out")
 ```
+
+## Versioning
+
+The source of truth for the package version is:
+
+```text
+src/py_ydotool/VERSION
+```
+
+The package exports `__version__` by reading that file at runtime, and the repository checks that it stays in sync with `pyproject.toml` and Git release tags.
+
+Useful commands:
+
+```bash
+just version
+just version-check
+just set-version 0.1.1
+just tag-version
+```
+
+`just release-check` runs before push through Lefthook. It will fail when:
+
+- `src/py_ydotool/VERSION` and `pyproject.toml` disagree
+- `HEAD` has a release tag that does not match the package version
+- there are commits after the latest release tag but the package version was not bumped
 
 ## Public API
 
