@@ -19,9 +19,9 @@ def main() -> int:
     args = parser.parse_args()
 
     parse_version(args.version)
-    write_version(args.version)
+    write_version(args.version, refresh_lock=True)
     next_tag = normalize_release_tag(args.version)
-    print(f"Updated version to {args.version}. Next release tag: {next_tag}")
+    print(f"Updated version to {args.version}. Refreshed uv.lock. Next release tag: {next_tag}")
     return 0
 
 

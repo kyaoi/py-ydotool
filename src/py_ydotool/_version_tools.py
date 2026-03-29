@@ -70,14 +70,26 @@ def replace_pyproject_version_text(text: str, new_version: str) -> str:
     )
 
 
-def write_version(new_version: str) -> None:
+def refresh_lockfile(root: Path = ROOT) -> None:
+    subprocess.run(["uv", "lock"], check=True, cwd=root)
+
+
+def write_version(
+    new_version: str,
+    *,
+    version_file: Path = VERSION_FILE,
+    pyproject_file: Path = PYPROJECT_FILE,
+    refresh_lock: bool = False,
+) -> None:
     parse_version(new_version)
-    VERSION_FILE.write_text(f"{new_version}\n", encoding="utf-8")
-    pyproject_text = PYPROJECT_FILE.read_text(encoding="utf-8")
-    PYPROJECT_FILE.write_text(
+    version_file.write_text(f"{new_version}\n", encoding="utf-8")
+    pyproject_text = pyproject_file.read_text(encoding="utf-8")
+    pyproject_file.write_text(
         replace_pyproject_version_text(pyproject_text, new_version),
         encoding="utf-8",
     )
+    if refresh_lock:
+        refresh_lockfile()
 
 
 def git_output(*args: str) -> list[str]:

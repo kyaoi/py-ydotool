@@ -246,3 +246,10 @@ Early personal project. APIs may change.
 ## License
 
 MIT
+
+
+## Versioning workflow
+
+- `just set-version 0.1.2` updates `src/py_ydotool/VERSION`, `pyproject.toml`, and refreshes `uv.lock`.
+- `just tag-version` requires a clean working tree and will refuse to tag if version files are still uncommitted.
+- `just release-version 0.1.2` is the recommended path for a release bump because it updates version files, commits `VERSION` / `pyproject.toml` / `uv.lock`, and then creates the matching tag.

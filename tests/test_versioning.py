@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import Mock
 
 from py_ydotool import __version__
 from py_ydotool._version_tools import (
@@ -8,7 +9,9 @@ from py_ydotool._version_tools import (
     parse_version,
     read_pyproject_version,
     read_version_file,
+    refresh_lockfile,
     replace_pyproject_version_text,
+    write_version,
 )
 
 
@@ -98,3 +101,48 @@ def test_evaluate_version_state_accepts_matching_head_tag_without_dirty_bump() -
         repo_tags=["v0.1.0", "v0.2.0"],
     )
     assert result.ok is True
+
+
+def test_refresh_lockfile_runs_uv_lock(monkeypatch) -> None:
+    run = Mock()
+    monkeypatch.setattr("py_ydotool._version_tools.subprocess.run", run)
+
+    refresh_lockfile()
+
+    run.assert_called_once_with(["uv", "lock"], check=True, cwd=Path.cwd())
+
+
+def test_write_version_can_skip_lock_refresh(tmp_path: Path) -> None:
+    version_file = tmp_path / "VERSION"
+    pyproject_file = tmp_path / "pyproject.toml"
+    version_file.write_text("0.1.0\n", encoding="utf-8")
+    pyproject_file.write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
+
+    write_version(
+        "0.1.1",
+        version_file=version_file,
+        pyproject_file=pyproject_file,
+        refresh_lock=False,
+    )
+
+    assert version_file.read_text(encoding="utf-8") == "0.1.1\n"
+    assert 'version = "0.1.1"' in pyproject_file.read_text(encoding="utf-8")
+
+
+def test_write_version_refreshes_lock_when_requested(tmp_path: Path, monkeypatch) -> None:
+    version_file = tmp_path / "VERSION"
+    pyproject_file = tmp_path / "pyproject.toml"
+    version_file.write_text("0.1.0\n", encoding="utf-8")
+    pyproject_file.write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
+
+    refresh = Mock()
+    monkeypatch.setattr("py_ydotool._version_tools.refresh_lockfile", refresh)
+
+    write_version(
+        "0.1.1",
+        version_file=version_file,
+        pyproject_file=pyproject_file,
+        refresh_lock=True,
+    )
+
+    refresh.assert_called_once_with()

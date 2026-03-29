@@ -1,6 +1,6 @@
 [project]
 name = "py-ydotool"
-version = "0.1.2"
+version = "0.1.3"
 description = "A small Python wrapper around ydotool for Wayland automation."
 readme = "README.md"
 authors = [

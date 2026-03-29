@@ -34,14 +34,20 @@ set-version version:
 
 release-version version:
   just set-version {{version}}
-  git add pyproject.toml src/py_ydotool/VERSION
+  git add pyproject.toml src/py_ydotool/VERSION uv.lock
   git commit -m "chore: bump version to {{version}}"
   just tag-version
 
 tag-version:
   @version="$$(PYTHONDONTWRITEBYTECODE=1 uv run python scripts/check_version.py --print)"; \
+  dirty="$$(git status --short -- pyproject.toml uv.lock src/py_ydotool/VERSION)"; \
   if [[ -n "$$(git status --porcelain)" ]]; then \
-    echo "Working tree is dirty. Commit version changes before tagging v$$version." >&2; \
+    if [[ -n "$$dirty" ]]; then \
+      echo "Working tree is dirty. Commit version files before tagging v$$version:" >&2; \
+      echo "$$dirty" >&2; \
+    else \
+      echo "Working tree is dirty. Commit or stash changes before tagging v$$version." >&2; \
+    fi; \
     exit 1; \
   fi; \
   if git rev-parse "v$$version" >/dev/null 2>&1; then \
