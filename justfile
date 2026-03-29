@@ -23,6 +23,8 @@ check: lint test
 
 ci: lint test
 
+release-check: ci build
+
 build:
   uv build
 

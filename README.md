@@ -27,10 +27,16 @@ For clipboard support, one of the following is required:
 
 ## Installation
 
-### From GitHub
+### From GitHub with pip
 
 ```bash
 pip install "py-ydotool @ git+https://github.com/kyaoi/py-ydotool.git"
+```
+
+### From GitHub with uv
+
+```bash
+uv add "py-ydotool @ git+https://github.com/kyaoi/py-ydotool.git"
 ```
 
 ### Development
@@ -129,3 +135,7 @@ The library stays focused on explicit keyboard, mouse, and clipboard automation 
 ## Status
 
 Early personal project. APIs may change.
+
+## License
+
+MIT
