@@ -17,7 +17,10 @@ fix:
   uv run ruff format .
 
 test:
-  uv run pytest
+  uv run pytest -m "not integration"
+
+test-integration:
+  PY_YDOTOOL_RUN_INTEGRATION=1 uv run pytest -m integration
 
 check: lint test
 

@@ -1,9 +1,19 @@
+import os
+import stat
 import subprocess
 from subprocess import CompletedProcess
 
 import pytest
 
-from py_ydotool import CommandTimeoutError, Key, MouseButton, PyYDoTool
+from py_ydotool import (
+    CommandExecutionError,
+    CommandTimeoutError,
+    DaemonReadyTimeoutError,
+    DaemonStartError,
+    Key,
+    MouseButton,
+    PyYDoTool,
+)
 from py_ydotool.clipboard import ClipboardBackend
 
 
@@ -785,3 +795,725 @@ def test_click_with_modifiers_holds_then_clicks(monkeypatch) -> None:
         ("click", MouseButton.RIGHT),
         ("hold_keys_done", (Key.CTRL, Key.SHIFT)),
     ]
+
+
+def test_daemon_removes_stale_socket_before_start(monkeypatch, tmp_path) -> None:
+    class FakePopen:
+        returncode: int | None = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            self.args = args[0]
+
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    class FakeStatResult:
+        st_mode = stat.S_IFSOCK
+
+    socket_path = tmp_path / "ydotool.sock"
+    removed: list[str] = []
+    socket_exists = True
+
+    ready_states = iter([False, True, False])
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return next(ready_states)
+
+    real_stat = os.stat
+
+    def fake_stat(path: str, *, follow_symlinks: bool = False):
+        nonlocal socket_exists
+        if os.fspath(path) == str(socket_path):
+            if not socket_exists:
+                raise FileNotFoundError
+            assert follow_symlinks is False
+            return FakeStatResult()
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    real_unlink = os.unlink
+
+    def fake_unlink(path: str) -> None:
+        nonlocal socket_exists
+        if os.fspath(path) == str(socket_path):
+            if not socket_exists:
+                raise FileNotFoundError
+            socket_exists = False
+            removed.append(os.fspath(path))
+            return
+        real_unlink(path)
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("py_ydotool.client.os.stat", fake_stat)
+    monkeypatch.setattr("py_ydotool.client.os.unlink", fake_unlink)
+
+    tool = PyYDoTool(socket_path=str(socket_path), check_commands_on_init=False)
+    daemon = tool.daemon()
+    daemon.start()
+
+    assert removed == [str(socket_path)]
+
+    daemon.stop()
+
+
+def test_daemon_keeps_non_socket_path_before_start(monkeypatch, tmp_path) -> None:
+    class FakePopen:
+        returncode = 2
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def poll(self):
+            return 2
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 2
+
+        def kill(self) -> None:
+            return None
+
+    socket_path = tmp_path / "ydotool.sock"
+    socket_path.write_text("not a socket", encoding="utf-8")
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return False
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+
+    tool = PyYDoTool(socket_path=str(socket_path), check_commands_on_init=False)
+
+    with pytest.raises(DaemonStartError):
+        tool.daemon().start()
+
+    assert socket_path.read_text(encoding="utf-8") == "not a socket"
+
+
+def test_daemon_can_disable_stale_socket_cleanup(monkeypatch, tmp_path) -> None:
+    class FakePopen:
+        returncode = 2
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def poll(self):
+            return 2
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 2
+
+        def kill(self) -> None:
+            return None
+
+    class FakeStatResult:
+        st_mode = stat.S_IFSOCK
+
+    socket_path = tmp_path / "ydotool.sock"
+    removed: list[str] = []
+    socket_exists = True
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return False
+
+    real_stat = os.stat
+
+    def fake_stat(path: str, *, follow_symlinks: bool = False):
+        if os.fspath(path) == str(socket_path):
+            if not socket_exists:
+                raise FileNotFoundError
+            assert follow_symlinks is False
+            return FakeStatResult()
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    real_unlink = os.unlink
+
+    def fake_unlink(path: str) -> None:
+        if os.fspath(path) == str(socket_path):
+            removed.append(os.fspath(path))
+            return
+        real_unlink(path)
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("py_ydotool.client.os.stat", fake_stat)
+    monkeypatch.setattr("py_ydotool.client.os.unlink", fake_unlink)
+
+    tool = PyYDoTool(socket_path=str(socket_path), check_commands_on_init=False)
+
+    with pytest.raises(DaemonStartError):
+        tool.daemon(clean_stale_socket=False).start()
+
+    assert removed == [str(socket_path)]
+
+
+def test_daemon_socket_ready_uses_ydotool_debug(monkeypatch, tmp_path) -> None:
+    socket_path = tmp_path / "ydotool.sock"
+    socket_path.touch()
+
+    def fake_run(self: PyYDoTool, *args: str, timeout: float | None = None):
+        assert args == ("debug",)
+        assert timeout == 0.2
+        return object()
+
+    def fake_socket_stat(*args, **kwargs):
+        return type("S", (), {"st_mode": stat.S_IFSOCK})()
+
+    monkeypatch.setattr("py_ydotool.client.os.stat", fake_socket_stat)
+    monkeypatch.setattr(PyYDoTool, "_run", fake_run)
+
+    tool = PyYDoTool(socket_path=str(socket_path), check_commands_on_init=False)
+    assert tool.daemon()._is_socket_ready() is True
+
+
+def test_daemon_socket_ready_is_false_when_debug_fails(monkeypatch, tmp_path) -> None:
+    socket_path = tmp_path / "ydotool.sock"
+    socket_path.touch()
+
+    def fake_run(self: PyYDoTool, *args: str, timeout: float | None = None):
+        raise CommandExecutionError("debug failed")
+
+    def fake_socket_stat(*args, **kwargs):
+        return type("S", (), {"st_mode": stat.S_IFSOCK})()
+
+    monkeypatch.setattr("py_ydotool.client.os.stat", fake_socket_stat)
+    monkeypatch.setattr(PyYDoTool, "_run", fake_run)
+
+    tool = PyYDoTool(socket_path=str(socket_path), check_commands_on_init=False)
+    assert tool.daemon()._is_socket_ready() is False
+
+
+def test_daemon_stop_removes_owned_socket_when_not_ready(monkeypatch, tmp_path) -> None:
+    calls: list[str] = []
+    socket_path = tmp_path / "ydotool.sock"
+
+    class FakePopen:
+        returncode: int | None = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+            self.returncode = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            calls.append(f"wait:{timeout}")
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            calls.append("kill")
+            self.returncode = -9
+
+    socket_exists = False
+    ready_calls = 0
+    removed: list[str] = []
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        nonlocal ready_calls, socket_exists
+        ready_calls += 1
+        if ready_calls == 1:
+            return False
+        if ready_calls == 2:
+            socket_exists = True
+            return True
+        return False
+
+    real_stat = os.stat
+
+    def fake_stat(path: str, *, follow_symlinks: bool = False):
+        if os.fspath(path) == str(socket_path):
+            if not socket_exists:
+                raise FileNotFoundError
+            return type("S", (), {"st_mode": stat.S_IFSOCK})()
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    real_unlink = os.unlink
+
+    def fake_unlink(path: str) -> None:
+        nonlocal socket_exists
+        if os.fspath(path) == str(socket_path):
+            if not socket_exists:
+                raise FileNotFoundError
+            socket_exists = False
+            removed.append(os.fspath(path))
+            return
+        real_unlink(path)
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("py_ydotool.client.os.stat", fake_stat)
+    monkeypatch.setattr("py_ydotool.client.os.unlink", fake_unlink)
+
+    tool = PyYDoTool(socket_path=str(socket_path), check_commands_on_init=False)
+    daemon = tool.daemon(stop_timeout=0.25)
+    daemon.start()
+    daemon.stop()
+
+    assert calls == ["terminate", "wait:0.25"]
+    assert removed == [str(socket_path)]
+
+
+def test_daemon_stop_keeps_socket_when_it_is_still_ready(monkeypatch, tmp_path) -> None:
+    socket_path = tmp_path / "ydotool.sock"
+
+    class FakePopen:
+        returncode: int | None = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    socket_exists = False
+    ready_calls = 0
+    removed: list[str] = []
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        nonlocal ready_calls, socket_exists
+        ready_calls += 1
+        if ready_calls == 1:
+            return False
+        socket_exists = True
+        return True
+
+    real_stat = os.stat
+
+    def fake_stat(path: str, *, follow_symlinks: bool = False):
+        if os.fspath(path) == str(socket_path):
+            if not socket_exists:
+                raise FileNotFoundError
+            return type("S", (), {"st_mode": stat.S_IFSOCK})()
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    real_unlink = os.unlink
+
+    def fake_unlink(path: str) -> None:
+        if os.fspath(path) == str(socket_path):
+            removed.append(os.fspath(path))
+            return
+        real_unlink(path)
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("py_ydotool.client.os.stat", fake_stat)
+    monkeypatch.setattr("py_ydotool.client.os.unlink", fake_unlink)
+
+    tool = PyYDoTool(socket_path=str(socket_path), check_commands_on_init=False)
+    daemon = tool.daemon()
+    daemon.start()
+    daemon.stop()
+
+    assert removed == []
+
+
+def test_daemon_reuses_existing_socket(monkeypatch) -> None:
+    started: list[bool] = []
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return True
+
+    def fake_popen(*args, **kwargs):
+        started.append(True)
+        raise AssertionError("ydotoold should not be started when socket is already ready")
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", fake_popen)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    daemon = tool.daemon()
+    with daemon:
+        assert daemon._owns_process is False
+
+    assert started == []
+
+
+def test_daemon_reused_socket_does_not_register_atexit(monkeypatch) -> None:
+    register_calls: list[object] = []
+    unregister_calls: list[object] = []
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return True
+
+    def fake_register(callback: object) -> object:
+        register_calls.append(callback)
+        return callback
+
+    def fake_unregister(callback: object) -> None:
+        unregister_calls.append(callback)
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.atexit.register", fake_register)
+    monkeypatch.setattr("py_ydotool.client.atexit.unregister", fake_unregister)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    daemon = tool.daemon()
+    daemon.start()
+    daemon.stop()
+
+    assert register_calls == []
+    assert unregister_calls == []
+
+
+def test_daemon_registers_and_unregisters_atexit_for_owned_process(monkeypatch) -> None:
+    register_calls: list[object] = []
+    unregister_calls: list[object] = []
+
+    class FakePopen:
+        returncode: int | None = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            self.args = args[0]
+
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    ready_states = iter([False, True, False])
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return next(ready_states)
+
+    def fake_register(callback: object) -> object:
+        register_calls.append(callback)
+        return callback
+
+    def fake_unregister(callback: object) -> None:
+        unregister_calls.append(callback)
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("py_ydotool.client.atexit.register", fake_register)
+    monkeypatch.setattr("py_ydotool.client.atexit.unregister", fake_unregister)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    daemon = tool.daemon()
+    daemon.start()
+    callback = daemon._atexit_callback
+    daemon.stop()
+
+    assert register_calls == [callback]
+    assert unregister_calls == [callback]
+
+
+def test_daemon_starts_and_stops_owned_process(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakePopen:
+        returncode: int | None = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            self.args = args[0]
+
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+            self.returncode = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            calls.append(f"wait:{timeout}")
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            calls.append("kill")
+            self.returncode = -9
+
+    ready_states = iter([False, True, False])
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return next(ready_states)
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    daemon = tool.daemon(stop_timeout=0.25)
+    with daemon:
+        assert daemon._owns_process is True
+        assert daemon._process is not None
+
+    assert calls == ["terminate", "wait:0.25"]
+
+
+def test_daemon_decorator_starts_and_stops(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakePopen:
+        returncode: int | None = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+            self.returncode = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            calls.append("wait")
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            calls.append("kill")
+            self.returncode = -9
+
+    ready_states = iter([False, True, False])
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return next(ready_states)
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    @tool.daemon()
+    def run() -> str:
+        calls.append("body")
+        return "ok"
+
+    assert run() == "ok"
+    assert calls == ["body", "terminate", "wait"]
+
+
+def test_daemon_timeout_stops_owned_process(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakePopen:
+        returncode: int | None = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+            self.returncode = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            calls.append("wait")
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            calls.append("kill")
+            self.returncode = -9
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return False
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("py_ydotool.client.time.sleep", lambda _: None)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(DaemonReadyTimeoutError):
+        tool.daemon(ready_timeout=0.0).__enter__()
+
+    assert calls == ["terminate", "wait"]
+
+
+def test_daemon_timeout_includes_stderr(monkeypatch) -> None:
+    class FakePopen:
+        returncode: int | None = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            kwargs["stderr"].write("permission denied")
+            kwargs["stderr"].flush()
+
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            self.returncode = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return False
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("py_ydotool.client.time.sleep", lambda _: None)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(DaemonReadyTimeoutError, match="permission denied"):
+        tool.daemon(ready_timeout=0.0).start()
+
+
+def test_daemon_exit_early_includes_stderr(monkeypatch) -> None:
+    class FakePopen:
+        returncode = 2
+
+        def __init__(self, *args, **kwargs) -> None:
+            kwargs["stderr"].write("cannot open /dev/uinput")
+            kwargs["stderr"].flush()
+
+        def poll(self):
+            return 2
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 2
+
+        def kill(self) -> None:
+            return None
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return False
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(DaemonStartError, match="cannot open /dev/uinput"):
+        tool.daemon().start()
+
+
+def test_daemon_raises_when_process_exits_early(monkeypatch) -> None:
+    class FakePopen:
+        returncode = 2
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def poll(self):
+            return 2
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 2
+
+        def kill(self) -> None:
+            return None
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return False
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(DaemonStartError):
+        tool.daemon().start()
+
+
+def test_daemon_exceptions_preserve_backward_compatibility() -> None:
+    assert issubclass(DaemonStartError, CommandExecutionError)
+    assert issubclass(DaemonReadyTimeoutError, CommandTimeoutError)

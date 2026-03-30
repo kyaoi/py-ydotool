@@ -8,6 +8,7 @@ A small Python wrapper around `ydotool` for Linux desktop automation.
 - explicit mouse helpers
 - clipboard helpers with backend auto-detection
 - predictable failures instead of hidden retries or magic behavior
+- optional `ydotoold` lifecycle helpers when you want this library to start and stop the daemon for you
 
 It does **not** try to be a full PyAutoGUI replacement. The goal is to keep the API small, readable, and friendly to Wayland-oriented setups that already use `ydotool`.
 
@@ -20,6 +21,7 @@ It does **not** try to be a full PyAutoGUI replacement. The goal is to keep the 
 - clipboard helpers with backend auto-detection
 - context managers for holding keys and mouse buttons
 - configurable command timeout for safer automation
+- optional daemon lifecycle helper usable as both a context manager and a decorator
 - file-based version management with pre-push release checks
 
 ## Requirements
@@ -55,6 +57,23 @@ uv add "py-ydotool @ git+https://github.com/kyaoi/py-ydotool.git"
 uv sync
 ```
 
+### Opt-in integration tests
+
+The regular test suite is fast and mock-based.
+For real `ydotoold` lifecycle coverage, there is also an opt-in integration test module that starts a real daemon on a temporary socket.
+
+```bash
+just test-integration
+```
+
+This requires:
+
+- Linux
+- `ydotool` and `ydotoold` in `PATH`
+- read/write access to `/dev/uinput`
+
+If those prerequisites are missing, the integration tests skip themselves with a short reason.
+
 ## Basic usage
 
 ### Type text and press keys
@@ -79,6 +98,151 @@ gui.press_many([Key.J, Key.L, Key.T, Key.ENTER], interval=0.2)
 
 `Key.A`, `Key.ENTER`, `Key.LEFT_CTRL`, and similar values are **keycode constants**.
 They are useful when you want to express physical key presses such as `Ctrl+A`, navigation keys, function keys, or media keys.
+
+### Start and stop `ydotoold` automatically
+
+```python
+from py_ydotool import Key, PyYDoTool
+
+gui = PyYDoTool()
+
+with gui.daemon():
+    gui.write("hello")
+    gui.press(Key.ENTER)
+```
+
+`with ...:` uses a **context manager**.
+If `ydotoold` is already running on the configured socket, `py-ydotool` reuses it and leaves it running.
+If it starts the daemon itself, it stops that daemon automatically when the block exits.
+
+The same helper can also be used as a **decorator** with `@...`:
+
+```python
+from py_ydotool import Key, PyYDoTool
+
+gui = PyYDoTool()
+
+@gui.daemon()
+def type_hello() -> None:
+    gui.write("hello")
+    gui.press(Key.ENTER)
+```
+
+If you prefer manual control, you can keep the manager object and call `start()` / `stop()` yourself:
+
+```python
+from py_ydotool import PyYDoTool
+
+gui = PyYDoTool()
+daemon = gui.daemon()
+daemon.start()
+try:
+    gui.write("hello")
+finally:
+    daemon.stop()
+```
+
+By default, `gui.daemon()` starts `ydotoold --socket-path <socket>`.
+Readiness is checked by running `ydotool debug` against that socket, so custom
+socket paths are validated using the actual `ydotool` client instead of a raw
+Python socket probe.
+If your setup needs additional flags such as `--socket-own`, pass them via `extra_args`.
+
+Before starting its own daemon, the helper also removes a stale Unix socket file at that path when all of the following are true:
+
+- the socket is not currently accepting connections
+- the path exists
+- the path is actually a socket file
+
+This helps after crashes where `ydotoold` is gone but the old socket pathname remains.
+If you do not want that behavior, pass `clean_stale_socket=False`.
+
+`py-ydotool` can manage the daemon lifecycle for you, but it still cannot bypass system permissions.
+If `ydotoold` cannot open `/dev/uinput`, create the socket, or access the requested ownership settings,
+startup will still fail and the exception now includes any captured `stderr` output from `ydotoold` when available.
+
+For most scripts, `with gui.daemon():` is the safest pattern.
+If you call `start()` manually, `py-ydotool` also registers a best-effort `atexit` cleanup for daemons it started itself,
+so forgotten `stop()` calls are less likely to leave an extra helper process behind.
+
+### Daemon-specific exceptions
+
+The daemon helper raises more specific exceptions when `ydotoold` startup fails:
+
+- `DaemonStartError`: `ydotoold` exited before the socket became ready
+- `DaemonReadyTimeoutError`: `ydotoold` did not become ready before the timeout
+
+These stay backward-compatible with the broader command exceptions:
+
+- `DaemonStartError` is also a `CommandExecutionError`
+- `DaemonReadyTimeoutError` is also a `CommandTimeoutError`
+
+```python
+from py_ydotool import (
+    DaemonReadyTimeoutError,
+    DaemonStartError,
+    PyYDoTool,
+)
+
+gui = PyYDoTool()
+
+try:
+    with gui.daemon(ready_timeout=2.0):
+        gui.write("hello")
+except DaemonStartError:
+    print("ydotoold exited early")
+except DaemonReadyTimeoutError:
+    print("ydotoold did not become ready in time")
+```
+
+### Choosing between a long-running daemon and `gui.daemon()`
+
+There are two common ways to work with `ydotoold`:
+
+- **Long-running daemon**: start `ydotoold` yourself, for example from a login shell, user service, or system configuration.
+  This is a good fit when you use `ydotool` often and want one shared socket that stays available across many scripts.
+- **Library-managed daemon**: use `with gui.daemon():` or `@gui.daemon()` and let `py-ydotool` manage a temporary daemon for a single script or function call.
+  This is a good fit for small automation scripts, tests, and one-shot tools that should clean up after themselves.
+
+A good rule of thumb is:
+
+- prefer a **long-running daemon** for frequent daily use or when multiple tools share the same socket
+- prefer **`gui.daemon()`** for self-contained scripts where setup and cleanup should happen automatically
+
+If you already have a long-running daemon on the configured socket, `gui.daemon()` simply reuses it and does not stop it on exit.
+When `py-ydotool` owns the daemon process, it also removes the owned socket path on clean shutdown if it is no longer serving requests.
+
+
+#### Quick chooser
+
+| Pattern | Good fit |
+|---|---|
+| Long-running `ydotoold` | You use `ydotool` regularly and want one shared socket for many scripts or tools. |
+| `with gui.daemon():` | You want setup and cleanup to happen automatically for one script block. |
+| `@gui.daemon()` | You want the same automatic lifecycle, but attached to one function call. |
+| Manual `start()` / `stop()` | You need finer control over exactly when the daemon starts and stops. |
+
+#### Ownership rules
+
+The daemon helper is intentionally conservative about shutdown:
+
+- if a daemon is already running on the configured socket, `gui.daemon()` reuses it
+- reused daemons are **not** stopped when the helper exits
+- only daemons started by `py-ydotool` itself are stopped automatically
+- when `py-ydotool` owns the daemon, it also removes the owned socket path on clean shutdown if it is no longer serving requests
+
+This makes `gui.daemon()` safe to use even when another service or login hook already manages `ydotoold` for the whole session.
+
+#### Troubleshooting daemon startup
+
+A few environment issues are common when working with `ydotoold`:
+
+- **`/dev/uinput` permissions**: `ydotoold` needs read/write access to `/dev/uinput`. If that device cannot be opened, daemon startup and integration tests will fail.
+- **`sudo` and `PATH`**: if you run integration tests with `sudo`, preserve `PATH` so `ydotool` and `ydotoold` stay discoverable. For example: `sudo env "PATH=$PATH" PY_YDOTOOL_RUN_INTEGRATION=1 uv run pytest -m integration -rs`
+- **stale socket files**: if `ydotoold` crashed previously, the old Unix socket pathname may remain. `gui.daemon()` removes a stale socket file automatically by default before starting its own daemon.
+- **custom socket paths**: readiness is checked against the configured socket path by using the actual `ydotool` client, so custom socket paths are supported, but the daemon still must be able to create and serve that socket.
+
+When startup fails, prefer catching `DaemonStartError` or `DaemonReadyTimeoutError` first. Those exceptions include daemon-specific context and, when available, captured `stderr` from `ydotoold`.
 
 ### Clipboard-aware text input
 
@@ -143,6 +307,9 @@ try:
     gui.get_clipboard()
 except CommandTimeoutError:
     print("clipboard backend timed out")
+
+# ydotoold lifecycle helpers also expose more specific daemon errors
+# while remaining compatible with the broader command error types.
 ```
 
 ## Key constants
@@ -218,6 +385,7 @@ The version-related `just` commands also run with `PYTHONDONTWRITEBYTECODE=1`, s
 Top-level exports are:
 
 - `PyYDoTool`
+- `YDoToolDaemon`
 - `Key`
 - `MouseButton`
 - `ClipboardBackend`
@@ -226,6 +394,9 @@ Top-level exports are:
 - `CommandNotFoundError`
 - `CommandExecutionError`
 - `CommandTimeoutError`
+- `DaemonError`
+- `DaemonStartError`
+- `DaemonReadyTimeoutError`
 - `ClipboardUnavailableError`
 - `__version__`
 

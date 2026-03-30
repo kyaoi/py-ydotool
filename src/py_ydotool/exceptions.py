@@ -16,3 +16,15 @@ class ClipboardUnavailableError(PyYDoToolError):
 
 class CommandTimeoutError(PyYDoToolError):
     """Raised when an external command exceeds the configured timeout."""
+
+
+class DaemonError(PyYDoToolError):
+    """Base exception for ydotoold lifecycle helper failures."""
+
+
+class DaemonStartError(CommandExecutionError, DaemonError):
+    """Raised when ydotoold exits before it becomes ready."""
+
+
+class DaemonReadyTimeoutError(CommandTimeoutError, DaemonError):
+    """Raised when ydotoold does not become ready in time."""
