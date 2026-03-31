@@ -7,6 +7,7 @@ import pytest
 
 from py_ydotool import (
     CommandExecutionError,
+    CommandNotFoundError,
     CommandTimeoutError,
     DaemonReadyTimeoutError,
     DaemonStartError,
@@ -32,6 +33,63 @@ def test_init_without_command_check() -> None:
 def test_init_has_default_command_timeout() -> None:
     tool = PyYDoTool(check_commands_on_init=False)
     assert tool.command_timeout == 5.0
+
+
+def test_doctor_report_uses_tool_socket_path(monkeypatch) -> None:
+    tool = PyYDoTool(socket_path="/tmp/custom.sock", check_commands_on_init=False)
+    seen: dict[str, object] = {}
+
+    def fake_collect_doctor_report(**kwargs):
+        seen.update(kwargs)
+        return "report"
+
+    monkeypatch.setattr("py_ydotool._system.collect_doctor_report", fake_collect_doctor_report)
+
+    report = tool.doctor_report(user="alice", group="uinput-users")
+
+    assert report == "report"
+    assert seen["socket_path"] == "/tmp/custom.sock"
+    assert seen["user"] == "alice"
+    assert seen["group"] == "uinput-users"
+
+
+def test_doctor_text_renders_report(monkeypatch) -> None:
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    monkeypatch.setattr(
+        "py_ydotool.client.PyYDoTool.doctor_report",
+        lambda self, **_: "report",
+    )
+    monkeypatch.setattr(
+        "py_ydotool._system.render_doctor_report",
+        lambda report, stream=None: f"text:{report}",
+    )
+
+    assert tool.doctor_text() == "text:report"
+
+
+def test_setup_plan_uses_tool_socket_path() -> None:
+    tool = PyYDoTool(socket_path="/tmp/custom.sock", check_commands_on_init=False)
+
+    plan = tool.setup_plan(target_user="alice", group="uinput-users", dry_run=True)
+
+    assert plan.target_user == "alice"
+    assert plan.group == "uinput-users"
+
+
+def test_setup_plan_text_renders_plan(monkeypatch) -> None:
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    monkeypatch.setattr(
+        "py_ydotool.client.PyYDoTool.setup_plan",
+        lambda self, **_: "plan",
+    )
+    monkeypatch.setattr(
+        "py_ydotool._system.render_setup_plan",
+        lambda plan, dry_run: f"text:{plan}:{dry_run}",
+    )
+
+    assert tool.setup_plan_text(dry_run=True) == "text:plan:True"
 
 
 def test_run_uses_configured_timeout(monkeypatch) -> None:
@@ -84,6 +142,19 @@ def test_run_timeout_raises_command_timeout_error(monkeypatch) -> None:
         tool.press(Key.ENTER)
 
 
+def test_missing_command_error_includes_doctor_hint(monkeypatch) -> None:
+    monkeypatch.setattr("py_ydotool.client.shutil.which", lambda _: None)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(CommandNotFoundError) as exc_info:
+        tool._ensure_command("ydotool")
+
+    message = str(exc_info.value)
+    assert "py-ydotool doctor" in message
+    assert "PATH" in message
+
+
 def test_run_command_timeout_raises_command_timeout_error(monkeypatch) -> None:
     def fake_run(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd=["paste-cmd"], timeout=2.0)
@@ -102,6 +173,70 @@ def test_run_command_timeout_raises_command_timeout_error(monkeypatch) -> None:
 
     with pytest.raises(CommandTimeoutError):
         tool.get_clipboard()
+
+
+def test_daemon_stop_waits_for_settle_delay_when_owned(monkeypatch) -> None:
+    tool = PyYDoTool(check_commands_on_init=False)
+    daemon = tool.daemon(settle_delay=0.25)
+
+    sleep_calls: list[float] = []
+    events: list[str] = []
+
+    class FakeProcess:
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            events.append("terminate")
+
+        def wait(self, timeout: float | None = None) -> int:
+            events.append(f"wait:{timeout}")
+            return 0
+
+    monkeypatch.setattr("py_ydotool.client.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr(daemon, "_cleanup_socket_after_stop", lambda: events.append("cleanup"))
+    monkeypatch.setattr(daemon, "_unregister_atexit", lambda: events.append("unregister"))
+    monkeypatch.setattr(daemon, "_close_stderr_file", lambda: events.append("close-stderr"))
+
+    daemon._process = FakeProcess()
+    daemon._owns_process = True
+
+    daemon.stop()
+
+    assert sleep_calls == [0.25]
+    assert events == ["terminate", "wait:1.0", "cleanup", "unregister", "close-stderr"]
+
+
+def test_daemon_stop_skips_settle_delay_when_zero(monkeypatch) -> None:
+    tool = PyYDoTool(check_commands_on_init=False)
+    daemon = tool.daemon(settle_delay=0.0)
+
+    sleep_calls: list[float] = []
+    events: list[str] = []
+
+    class FakeProcess:
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            events.append("terminate")
+
+        def wait(self, timeout: float | None = None) -> int:
+            events.append(f"wait:{timeout}")
+            return 0
+
+    monkeypatch.setattr("py_ydotool.client.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr(daemon, "_cleanup_socket_after_stop", lambda: events.append("cleanup"))
+    monkeypatch.setattr(daemon, "_unregister_atexit", lambda: events.append("unregister"))
+    monkeypatch.setattr(daemon, "_close_stderr_file", lambda: events.append("close-stderr"))
+
+    daemon._process = FakeProcess()
+    daemon._owns_process = True
+
+    daemon.stop()
+
+    assert sleep_calls == []
+    assert events == ["terminate", "wait:1.0", "cleanup", "unregister", "close-stderr"]
 
 
 def test_press_calls_key_events(monkeypatch) -> None:
@@ -1477,6 +1612,75 @@ def test_daemon_exit_early_includes_stderr(monkeypatch) -> None:
 
     with pytest.raises(DaemonStartError, match="cannot open /dev/uinput"):
         tool.daemon().start()
+
+
+def test_daemon_exit_early_includes_setup_hint(monkeypatch) -> None:
+    class FakePopen:
+        returncode = 2
+
+        def __init__(self, *args, **kwargs) -> None:
+            kwargs["stderr"].write("cannot open /dev/uinput")
+            kwargs["stderr"].flush()
+
+        def poll(self):
+            return 2
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 2
+
+        def kill(self) -> None:
+            return None
+
+    def fake_ensure_command(self: PyYDoTool, name: str) -> None:
+        return None
+
+    def fake_socket_ready(self) -> bool:
+        return False
+
+    monkeypatch.setattr(PyYDoTool, "_ensure_command", fake_ensure_command)
+    monkeypatch.setattr("py_ydotool.client.YDoToolDaemon._is_socket_ready", fake_socket_ready)
+    monkeypatch.setattr("py_ydotool.client.subprocess.Popen", FakePopen)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(DaemonStartError) as exc_info:
+        tool.daemon().start()
+
+    message = str(exc_info.value)
+    assert "py-ydotool setup --dry-run" in message
+    assert "py-ydotool setup" in message
+
+
+def test_run_command_error_includes_socket_hint(monkeypatch) -> None:
+    def fake_backend(self: PyYDoTool) -> ClipboardBackend:
+        return ClipboardBackend(
+            name="test",
+            copy_command=("copy-cmd",),
+            paste_command=("paste-cmd",),
+        )
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["paste-cmd"],
+            output="",
+            stderr="failed to connect to socket /tmp/.ydotool_socket",
+        )
+
+    monkeypatch.setattr(PyYDoTool, "_get_clipboard_backend", fake_backend)
+    monkeypatch.setattr("py_ydotool.client.subprocess.run", fake_run)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(CommandExecutionError) as exc_info:
+        tool.get_clipboard()
+
+    message = str(exc_info.value)
+    assert "with gui.daemon():" in message
+    assert "py-ydotool doctor" in message
 
 
 def test_daemon_raises_when_process_exits_early(monkeypatch) -> None:

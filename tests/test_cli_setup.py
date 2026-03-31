@@ -407,7 +407,11 @@ def test_rerun_setup_with_privileges_prefers_sudo(monkeypatch) -> None:
 def test_doctor_report_to_dict_uses_stable_json_shape(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("py_ydotool._system.shutil.which", lambda _name: None)
     monkeypatch.setattr("py_ydotool._system.os.geteuid", lambda: 1000)
-    paths = SystemPaths(dev_uinput=tmp_path / "missing-uinput")
+    paths = SystemPaths(
+        dev_uinput=tmp_path / "missing-uinput",
+        udev_rules_dir=tmp_path / "udev-rules.d",
+        modules_load_dir=tmp_path / "modules-load.d",
+    )
 
     report = collect_doctor_report(socket_path=str(tmp_path / "ydotool.sock"), paths=paths)
 
@@ -542,9 +546,8 @@ def test_cli_doctor_strict_returns_one_for_warn(monkeypatch) -> None:
         paths=SystemPaths(dev_uinput=Path("/tmp/missing-uinput")),
     )
 
-    warn_item = next(item for item in report.items if item.status == "WARN")
     warn_only_report = type(report)(
-        items=(warn_item,),
+        items=(DoctorItem(name="warn-only", status="WARN", summary="warning only"),),
         socket_path=report.socket_path,
     )
     monkeypatch.setattr("py_ydotool.cli.collect_doctor_report", lambda **_kwargs: warn_only_report)

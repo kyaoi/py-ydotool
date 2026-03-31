@@ -55,7 +55,14 @@ uv add "py-ydotool @ git+https://github.com/kyaoi/py-ydotool.git"
 
 ```bash
 uv sync
+just fix
+just lint
+just test
+just check
 ```
+
+`just check` and `just ci` run `just fix` first, then lint and tests. That keeps routine
+repository checks friendly to small Ruff autofixes such as import sorting or line wrapping.
 
 After installation, the package also exposes a small CLI:
 
@@ -64,9 +71,50 @@ After installation, the package also exposes a small CLI:
 - `python -m py_ydotool doctor`
 - `python -m py_ydotool setup`
 
-## First-time setup flow
+## Quick start
 
-`py-ydotool` now separates **one-time system setup** from **normal Python usage**:
+For most users, the shortest path is:
+
+```bash
+py-ydotool doctor
+py-ydotool setup --dry-run
+py-ydotool setup
+py-ydotool doctor
+```
+
+Then use the library like this:
+
+```python
+from py_ydotool import Key, PyYDoTool
+
+gui = PyYDoTool()
+
+with gui.daemon():
+    gui.write("hello")
+    gui.press(Key.ENTER)
+```
+
+`doctor` checks what is missing. `setup` applies the one-time Linux changes needed for normal non-root usage. After that, `with gui.daemon():` starts and stops `ydotoold` for the current script.
+
+If you want to surface the same guidance inside your own Python app, you can also call the diagnostic helpers directly:
+
+```python
+from py_ydotool import Key, PyYDoTool
+
+gui = PyYDoTool()
+print(gui.doctor_text())
+print(gui.setup_plan_text(dry_run=True))
+
+with gui.daemon():
+    gui.write("hello")
+    gui.press(Key.ENTER)
+```
+
+Those methods stay non-destructive by default: `doctor_*` inspects the environment and `setup_plan_*` only previews the one-time Linux changes.
+
+## Setup and doctor
+
+`py-ydotool` separates **one-time system setup** from **normal Python usage**:
 
 - `py-ydotool doctor` inspects the current environment and explains what is missing
 - it checks the runtime prerequisites (`ydotool`, `ydotoold`, `/dev/uinput`, socket path)
@@ -154,6 +202,24 @@ Planned changes:
 ```
 
 The dry-run output intentionally includes the target paths, command previews, and the content that would be written so users can review the one-time setup before approving it.
+
+## Permission and setup troubleshooting
+
+If your script fails with a permission-like startup error, the first thing to run is:
+
+```bash
+py-ydotool doctor
+```
+
+Typical symptoms and fixes:
+
+| Symptom | What it usually means | What to do |
+| --- | --- | --- |
+| `ydotoold exited before becoming ready` | `ydotoold` could not open `/dev/uinput` or create the requested socket | Run `py-ydotool doctor`, then `py-ydotool setup --dry-run` and `py-ydotool setup` |
+| `Permission denied: /dev/uinput` | Your current user session still does not have the needed group access | Re-run setup if needed, then **log out and back in** and run `py-ydotool doctor` again |
+| `Required command not found: ydotool` or `ydotoold` | The package is not installed or not in `PATH` | Install `ydotool`, ensure both commands are in `PATH`, and re-run `doctor` |
+| Runtime exception includes `Next steps:` | `py-ydotool` recognized a common environment issue while raising the error | Follow the printed `doctor` / `setup` guidance in the exception message |
+| `socket-path` is `ERROR` in doctor | The chosen socket path is not writable or is blocked by another file | Pick a writable socket path or remove the conflicting file |
 
 ## Common doctor outcomes
 
@@ -259,6 +325,18 @@ with gui.daemon():
     gui.write("hello")
     gui.press(Key.ENTER)
 ```
+
+By default, the daemon helper now keeps an owned `ydotoold` alive for a very short settle delay before stopping it, so trailing input events are less likely to be cut off when the Python process exits immediately after the last command. In many small scripts this removes the need for an extra manual `sleep(...)` at the end.
+
+If your target app still needs a bit more time after the last event, you can tune that explicitly:
+
+```python
+with gui.daemon(settle_delay=0.2):
+    gui.write("hello")
+    gui.press(Key.ENTER)
+```
+
+Set `settle_delay=0` if you want the old immediate-stop behavior.
 
 `with ...:` uses a **context manager**.
 If `ydotoold` is already running on the configured socket, `py-ydotool` reuses it and leaves it running.

@@ -10,6 +10,7 @@ import time
 from collections.abc import Iterable, Iterator
 from contextlib import ContextDecorator, contextmanager
 from dataclasses import dataclass, field
+from typing import Any
 
 from .clipboard import ClipboardBackend, detect_clipboard_backend
 from .exceptions import (
@@ -32,6 +33,64 @@ class MouseButton:
     TASK = "0xC7"
 
 
+def _format_help_block(*items: str) -> str:
+    lines = [f"- {item}" for item in items]
+    return "\n\nNext steps:\n" + "\n".join(lines)
+
+
+def _doctor_setup_help() -> str:
+    return _format_help_block(
+        "Run `py-ydotool doctor` to inspect the current environment.",
+        "Review the planned changes with `py-ydotool setup --dry-run`.",
+        "Apply the one-time setup with `py-ydotool setup`.",
+        "If setup changed group membership, log out and back in before retrying.",
+    )
+
+
+def _missing_command_help(name: str) -> str:
+    return _format_help_block(
+        f"Install `{name}` and ensure it is available in `PATH`.",
+        "Run `py-ydotool doctor` to confirm the command is now visible.",
+    )
+
+
+def _socket_help() -> str:
+    return _format_help_block(
+        "Start a daemon with `with gui.daemon():` or ensure `ydotoold` is already running.",
+        "Run `py-ydotool doctor` to confirm the socket path is writable.",
+    )
+
+
+def _join_output(stdout: Any, stderr: Any) -> str:
+    return "\n".join(
+        part.strip() for part in (str(stdout or ""), str(stderr or "")) if str(part or "").strip()
+    )
+
+
+def _help_for_message(message: str) -> str:
+    lower = message.lower()
+    if any(
+        token in lower
+        for token in (
+            "/dev/uinput",
+            "permission denied",
+            "operation not permitted",
+        )
+    ):
+        return _doctor_setup_help()
+    if "socket" in lower and any(
+        token in lower
+        for token in (
+            "no such file",
+            "not a socket",
+            "failed to connect",
+            "cannot connect",
+        )
+    ):
+        return _socket_help()
+    return ""
+
+
 class YDoToolDaemon(ContextDecorator):
     def __init__(
         self,
@@ -39,12 +98,14 @@ class YDoToolDaemon(ContextDecorator):
         *,
         ready_timeout: float = 5.0,
         stop_timeout: float = 1.0,
+        settle_delay: float = 0.1,
         extra_args: Iterable[str] = (),
         clean_stale_socket: bool = True,
     ) -> None:
         self._tool = tool
         self.ready_timeout = ready_timeout
         self.stop_timeout = stop_timeout
+        self.settle_delay = max(0.0, settle_delay)
         self.extra_args = tuple(extra_args)
         self.clean_stale_socket = clean_stale_socket
         self._process: subprocess.Popen[str] | None = None
@@ -174,20 +235,22 @@ class YDoToolDaemon(ContextDecorator):
                 exit_code = self._process.returncode
                 stderr = self._format_stderr()
                 self.stop()
-                raise DaemonStartError(
+                message = (
                     f"ydotoold exited before becoming ready (exit code {exit_code})"
                     f"{self._format_socket_state()}{stderr}"
                 )
+                raise DaemonStartError(f"{message}{_help_for_message(message)}")
             if self._is_socket_ready():
                 return self
             time.sleep(0.05)
 
         stderr = self._format_stderr()
         self.stop()
-        raise DaemonReadyTimeoutError(
+        message = (
             f"ydotoold did not become ready within {self.ready_timeout} seconds"
             f"{self._format_socket_state()}{stderr}"
         )
+        raise DaemonReadyTimeoutError(f"{message}{_help_for_message(message)}")
 
     def _cleanup_socket_after_stop(self) -> None:
         if not self.socket_path or not self._is_socket_file():
@@ -210,6 +273,8 @@ class YDoToolDaemon(ContextDecorator):
         process = self._process
         try:
             if process.poll() is None:
+                if self.settle_delay > 0:
+                    time.sleep(self.settle_delay)
                 process.terminate()
                 try:
                     process.wait(timeout=self.stop_timeout)
@@ -254,7 +319,9 @@ class PyYDoTool:
 
     def _ensure_command(self, name: str) -> None:
         if shutil.which(name) is None:
-            raise CommandNotFoundError(f"Required command not found: {name}")
+            raise CommandNotFoundError(
+                f"Required command not found: {name}{_missing_command_help(name)}"
+            )
 
     def _run(
         self,
@@ -276,10 +343,14 @@ class PyYDoTool:
                 f"ydotool timed out after {exc.timeout} seconds: {' '.join(cmd)}"
             ) from exc
         except FileNotFoundError as exc:
-            raise CommandNotFoundError("Required command not found: ydotool") from exc
+            raise CommandNotFoundError(
+                f"Required command not found: ydotool{_missing_command_help('ydotool')}"
+            ) from exc
         except subprocess.CalledProcessError as exc:
+            help_text = _help_for_message(_join_output(exc.stdout, exc.stderr))
             raise CommandExecutionError(
                 f"ydotool failed: {' '.join(exc.cmd)}\nstdout: {exc.stdout}\nstderr: {exc.stderr}"
+                f"{help_text}"
             ) from exc
 
     def _run_command(
@@ -304,10 +375,14 @@ class PyYDoTool:
                 f"command timed out after {exc.timeout} seconds: {' '.join(cmd)}"
             ) from exc
         except FileNotFoundError as exc:
-            raise CommandNotFoundError(f"Required command not found: {command[0]}") from exc
+            raise CommandNotFoundError(
+                f"Required command not found: {command[0]}{_missing_command_help(command[0])}"
+            ) from exc
         except subprocess.CalledProcessError as exc:
+            help_text = _help_for_message(_join_output(exc.stdout, exc.stderr))
             raise CommandExecutionError(
                 f"command failed: {' '.join(exc.cmd)}\nstdout: {exc.stdout}\nstderr: {exc.stderr}"
+                f"{help_text}"
             ) from exc
 
     def _get_clipboard_backend(self) -> ClipboardBackend:
@@ -320,6 +395,7 @@ class PyYDoTool:
         *,
         ready_timeout: float = 5.0,
         stop_timeout: float = 1.0,
+        settle_delay: float = 0.1,
         extra_args: Iterable[str] = (),
         clean_stale_socket: bool = True,
     ) -> YDoToolDaemon:
@@ -327,6 +403,7 @@ class PyYDoTool:
             self,
             ready_timeout=ready_timeout,
             stop_timeout=stop_timeout,
+            settle_delay=settle_delay,
             extra_args=extra_args,
             clean_stale_socket=clean_stale_socket,
         )
@@ -344,6 +421,98 @@ class PyYDoTool:
         if up:
             mask |= 0x80
         return f"0x{base | mask:02X}"
+
+    def doctor_report(
+        self,
+        *,
+        user: str | None = None,
+        group: str = "input",
+        paths=None,
+    ):
+        from ._system import SystemPaths, collect_doctor_report
+
+        resolved_paths = SystemPaths() if paths is None else paths
+        return collect_doctor_report(
+            socket_path=self.socket_path,
+            paths=resolved_paths,
+            user=user,
+            group=group,
+        )
+
+    def doctor_text(
+        self,
+        *,
+        user: str | None = None,
+        group: str = "input",
+        paths=None,
+        stream=None,
+    ) -> str:
+        from ._system import render_doctor_report
+
+        report = self.doctor_report(user=user, group=group, paths=paths)
+        return render_doctor_report(report, stream=stream)
+
+    def doctor_json(
+        self,
+        *,
+        user: str | None = None,
+        group: str = "input",
+        paths=None,
+        stream=None,
+    ) -> str:
+        from ._system import render_doctor_report_json
+
+        report = self.doctor_report(user=user, group=group, paths=paths)
+        return render_doctor_report_json(report, stream=stream)
+
+    def setup_plan(
+        self,
+        *,
+        target_user: str | None = None,
+        group: str = "input",
+        ensure_module_loaded_on_boot: bool = True,
+        add_user_to_group: bool = True,
+        dry_run: bool = False,
+        privileged: bool = False,
+        paths=None,
+    ):
+        from ._system import SetupOptions, SystemPaths, build_setup_plan
+
+        resolved_paths = SystemPaths() if paths is None else paths
+        options = SetupOptions(
+            target_user=target_user,
+            group=group,
+            ensure_module_loaded_on_boot=ensure_module_loaded_on_boot,
+            add_user_to_group=add_user_to_group,
+            dry_run=dry_run,
+            privileged=privileged,
+            socket_path=self.socket_path,
+        )
+        return build_setup_plan(options, paths=resolved_paths)
+
+    def setup_plan_text(
+        self,
+        *,
+        target_user: str | None = None,
+        group: str = "input",
+        ensure_module_loaded_on_boot: bool = True,
+        add_user_to_group: bool = True,
+        dry_run: bool = True,
+        privileged: bool = False,
+        paths=None,
+    ) -> str:
+        from ._system import render_setup_plan
+
+        plan = self.setup_plan(
+            target_user=target_user,
+            group=group,
+            ensure_module_loaded_on_boot=ensure_module_loaded_on_boot,
+            add_user_to_group=add_user_to_group,
+            dry_run=dry_run,
+            privileged=privileged,
+            paths=paths,
+        )
+        return render_setup_plan(plan, dry_run=dry_run)
 
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)

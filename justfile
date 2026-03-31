@@ -37,9 +37,9 @@ doctor-strict-json:
 setup-dry-run:
   uv run python -m py_ydotool setup --dry-run
 
-check: lint test
+check: fix lint test
 
-ci: lint test
+ci: fix lint test
 
 version:
   PYTHONDONTWRITEBYTECODE=1 uv run python scripts/check_version.py --print
