@@ -57,6 +57,141 @@ uv add "py-ydotool @ git+https://github.com/kyaoi/py-ydotool.git"
 uv sync
 ```
 
+After installation, the package also exposes a small CLI:
+
+- `py-ydotool doctor`
+- `py-ydotool setup`
+- `python -m py_ydotool doctor`
+- `python -m py_ydotool setup`
+
+## First-time setup flow
+
+`py-ydotool` now separates **one-time system setup** from **normal Python usage**:
+
+- `py-ydotool doctor` inspects the current environment and explains what is missing
+- it checks the runtime prerequisites (`ydotool`, `ydotoold`, `/dev/uinput`, socket path)
+- it also checks whether the managed udev rule, modules-load entry, and target user group membership look correct
+- `py-ydotool doctor --json` emits the same diagnosis in a machine-readable form for scripts or CI
+- `py-ydotool doctor --strict` makes WARN items fail with a non-zero exit status too
+- `py-ydotool doctor` also reports whether setup can self-escalate via `sudo` or `pkexec`
+- `py-ydotool setup` performs the explicit one-time Linux setup needed for non-root use
+- normal scripts then use `with gui.daemon():` or `@gui.daemon()` without needing `sudo` each time
+
+A typical first-run flow is:
+
+```bash
+py-ydotool doctor
+py-ydotool setup --dry-run
+py-ydotool setup
+py-ydotool doctor
+```
+
+The same flow is also available through the local development shortcuts:
+
+```bash
+just doctor
+just setup-dry-run
+just doctor-json
+just doctor-strict
+just doctor-strict-json
+```
+
+What to expect after `setup`:
+
+- if the managed files and runtime checks are all green, you can move on to `with gui.daemon():`
+- if setup had to add your user to the target group, the post-setup summary may still warn about
+  `/dev/uinput` or user-group state until you **log out and back in**
+- after logging back in, run `py-ydotool doctor --group <your-group>` once more to confirm the new
+  session is ready
+
+If you used a custom group during setup, pass the same group to doctor so the managed checks match your intent, including target-user membership:
+
+```bash
+py-ydotool doctor --group uinput-users
+```
+
+For scripts or CI checks, `doctor` can also emit JSON:
+
+```bash
+py-ydotool doctor --json
+```
+
+That JSON includes the overall summary, a small readiness block, per-check items, and deduplicated next actions.
+
+If you want CI to fail on warnings too (for example, when the runtime looks usable but the managed
+persistent setup is still missing), use strict mode:
+
+```bash
+py-ydotool doctor --strict
+```
+
+`doctor` also prints a short readiness summary before the detailed checks, so it is easier to tell whether the current shell looks usable now, whether the managed setup looks complete, and how `setup` would obtain administrator access.
+
+If you prefer discovering the workflow from the CLI, the built-in help now includes concrete examples too:
+
+```bash
+py-ydotool --help
+py-ydotool doctor --help
+py-ydotool setup --help
+```
+
+Example dry-run output:
+
+```text
+py-ydotool setup
+
+Setup targets:
+- target_user=alice
+- target_group=input
+- udev_rule_path=/etc/udev/rules.d/80-py-ydotool-uinput.rules
+- modules_load_path=/etc/modules-load.d/py-ydotool-uinput.conf
+
+Planned changes:
+1. Write the udev rule to /etc/udev/rules.d/80-py-ydotool-uinput.rules
+   preview: write /etc/udev/rules.d/80-py-ydotool-uinput.rules
+   detail: reason=missing or different managed rule for group `input`
+   detail: content=KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
+```
+
+The dry-run output intentionally includes the target paths, command previews, and the content that would be written so users can review the one-time setup before approving it.
+
+## Common doctor outcomes
+
+| doctor result | What it usually means | Next step |
+| --- | --- | --- |
+| `ydotool` / `ydotoold` is `ERROR` | The package is not installed or not in `PATH` | Install `ydotool`, then re-run `py-ydotool doctor` |
+| `/dev/uinput` is `ERROR` | The device node is missing or the `uinput` module is not loaded yet | Run `py-ydotool setup --dry-run`, then `py-ydotool setup` |
+| `/dev/uinput` is `WARN` after setup | The current login session probably has stale group membership | Log out and back in, then re-run `py-ydotool doctor --group <your-group>` |
+| `user-group` is `WARN` | The target user is not in the expected managed group | Re-run setup with the intended `--group`, or add the user to that group explicitly |
+| `setup-privileges` is `WARN` | `setup` cannot self-escalate with `sudo` or `pkexec` | Re-run `py-ydotool setup` from a root shell |
+| `socket-path` is `ERROR` | The configured socket path cannot be used as-is | Pick a writable location or remove the conflicting file |
+
+For automated checks, prefer these combinations:
+
+- `py-ydotool doctor --json` for machine-readable diagnostics
+- `py-ydotool doctor --strict` when warnings should fail CI too
+- `just doctor-json` / `just doctor-strict-json` during local iteration
+
+What `setup` is allowed to automate:
+
+- create or update a dedicated udev rule for `/dev/uinput`
+- optionally create `/etc/modules-load.d/py-ydotool-uinput.conf` so `uinput` is available after reboot
+- load the `uinput` kernel module immediately with `modprobe`
+- apply group ownership and mode `0660` to `/dev/uinput`
+- add the chosen user to the chosen group when needed
+
+What `setup` intentionally does **not** do:
+
+- it does not install a hidden background `ydotoold` service
+- it does not use `setuid`
+- it does not silently elevate privileges during normal library calls
+
+`setup` is explicit on purpose. When it needs administrator access, it requests that access once via `sudo` or `pkexec`, applies the planned changes, and then returns to normal non-root usage.
+
+If neither helper is available, both `doctor` and `setup` will tell you to rerun setup from a root shell instead of failing later at privilege escalation time.
+
+If the chosen user is newly added to a group, you will usually need to **log out and back in** before `doctor` reports full access for that session.
+
 ### Opt-in integration tests
 
 The regular test suite is fast and mock-based.
@@ -100,6 +235,20 @@ gui.press_many([Key.J, Key.L, Key.T, Key.ENTER], interval=0.2)
 They are useful when you want to express physical key presses such as `Ctrl+A`, navigation keys, function keys, or media keys.
 
 ### Start and stop `ydotoold` automatically
+
+Once the one-time `setup` step is done, the most ergonomic pattern is usually:
+
+```python
+from py_ydotool import PyYDoTool
+
+gui = PyYDoTool()
+
+with gui.daemon():
+    gui.write("hello")
+```
+
+That keeps `ydotoold` lifecycle local to the script while still avoiding root-only daily usage.
+
 
 ```python
 from py_ydotool import Key, PyYDoTool

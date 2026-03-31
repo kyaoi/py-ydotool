@@ -22,6 +22,21 @@ test:
 test-integration:
   PY_YDOTOOL_RUN_INTEGRATION=1 uv run pytest -m integration
 
+doctor:
+  uv run python -m py_ydotool doctor
+
+doctor-strict:
+  uv run python -m py_ydotool doctor --strict
+
+doctor-json:
+  uv run python -m py_ydotool doctor --json
+
+doctor-strict-json:
+  uv run python -m py_ydotool doctor --json --strict
+
+setup-dry-run:
+  uv run python -m py_ydotool setup --dry-run
+
 check: lint test
 
 ci: lint test

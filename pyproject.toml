@@ -22,6 +22,10 @@ classifiers = [
     "Topic :: Utilities",
 ]
 
+
+[project.scripts]
+py-ydotool = "py_ydotool.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/kyaoi/py-ydotool"
 Repository = "https://github.com/kyaoi/py-ydotool"
