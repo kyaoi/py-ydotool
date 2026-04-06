@@ -757,6 +757,14 @@ just tag-version
 
 `just tag-version` now refuses to run when the working tree is dirty. This prevents tagging a commit that does not actually contain the version bump.
 
+If the matching release tag already exists but still points at an older commit, `just tag-version` now reattaches that tag to the current `HEAD`. This is useful after amending or rebasing a release commit on `main`.
+
+When you move an already-published tag to a rewritten release commit, push that tag explicitly:
+
+```bash
+git push --force origin refs/tags/v0.1.1
+```
+
 `just release-check` runs before push through Lefthook. It will fail when:
 
 - `src/py_ydotool/VERSION` and `pyproject.toml` disagree
@@ -807,5 +815,5 @@ MIT
 ## Versioning workflow
 
 - `just set-version 0.1.2` updates `src/py_ydotool/VERSION`, `pyproject.toml`, and refreshes `uv.lock`.
-- `just tag-version` requires a clean working tree and will refuse to tag if version files are still uncommitted.
+- `just tag-version` requires a clean working tree, and if the matching version tag already exists on another commit it moves that tag to the current `HEAD`.
 - `just release-version 0.1.2` is the recommended path for a release bump because it updates version files, commits `VERSION` / `pyproject.toml` / `uv.lock`, and then creates the matching tag.

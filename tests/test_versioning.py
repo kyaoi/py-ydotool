@@ -5,6 +5,7 @@ from unittest.mock import Mock
 from py_ydotool import __version__
 from py_ydotool._version_tools import (
     evaluate_version_state,
+    get_worktree_status,
     latest_release_tag,
     normalize_release_tag,
     parse_version,
@@ -12,6 +13,7 @@ from py_ydotool._version_tools import (
     read_version_file,
     refresh_lockfile,
     replace_pyproject_version_text,
+    sync_release_tag,
     write_version,
 )
 
@@ -159,6 +161,81 @@ def test_write_version_refreshes_lock_when_requested(tmp_path: Path, monkeypatch
     refresh.assert_called_once_with()
 
 
+def test_get_worktree_status_checks_requested_paths(monkeypatch) -> None:
+    run = Mock(
+        return_value=Mock(
+            stdout=" M pyproject.toml\n?? scratch.txt\n",
+            returncode=0,
+        )
+    )
+    monkeypatch.setattr("py_ydotool._version_tools.subprocess.run", run)
+
+    result = get_worktree_status("pyproject.toml", "src/py_ydotool/VERSION")
+
+    assert result == ["M pyproject.toml", "?? scratch.txt"]
+    run.assert_called_once_with(
+        [
+            "git",
+            "status",
+            "--short",
+            "--",
+            "pyproject.toml",
+            "src/py_ydotool/VERSION",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_sync_release_tag_creates_missing_tag(monkeypatch) -> None:
+    monkeypatch.setattr("py_ydotool._version_tools.get_head_commit", lambda: "abcdef1234567890")
+    monkeypatch.setattr("py_ydotool._version_tools.get_tag_commit", lambda tag: None)
+    run = Mock()
+    monkeypatch.setattr("py_ydotool._version_tools.subprocess.run", run)
+
+    result = sync_release_tag("1.2.3")
+
+    assert result.action == "created"
+    assert result.tag == "v1.2.3"
+    assert result.message == "Created tag v1.2.3"
+    run.assert_called_once_with(["git", "tag", "v1.2.3"], check=True)
+
+
+def test_sync_release_tag_moves_existing_tag_to_head(monkeypatch) -> None:
+    monkeypatch.setattr("py_ydotool._version_tools.get_head_commit", lambda: "abcdef1234567890")
+    monkeypatch.setattr(
+        "py_ydotool._version_tools.get_tag_commit",
+        lambda tag: "1234567890abcdef",
+    )
+    run = Mock()
+    monkeypatch.setattr("py_ydotool._version_tools.subprocess.run", run)
+
+    result = sync_release_tag("1.2.3")
+
+    assert result.action == "moved"
+    assert result.tag == "v1.2.3"
+    assert result.message == "Moved tag v1.2.3 to HEAD from 1234567"
+    run.assert_called_once_with(["git", "tag", "-f", "v1.2.3"], check=True)
+
+
+def test_sync_release_tag_keeps_tag_already_pointing_at_head(monkeypatch) -> None:
+    monkeypatch.setattr("py_ydotool._version_tools.get_head_commit", lambda: "abcdef1234567890")
+    monkeypatch.setattr(
+        "py_ydotool._version_tools.get_tag_commit",
+        lambda tag: "abcdef1234567890",
+    )
+    run = Mock()
+    monkeypatch.setattr("py_ydotool._version_tools.subprocess.run", run)
+
+    result = sync_release_tag("1.2.3")
+
+    assert result.action == "unchanged"
+    assert result.tag == "v1.2.3"
+    assert result.message == "Tag already points at HEAD: v1.2.3"
+    run.assert_not_called()
+
+
 def test_check_version_script_prints_current_version(capsys, monkeypatch) -> None:
     check_version = _load_script_module("check_version")
     monkeypatch.setattr("sys.argv", ["check_version.py", "--print"])
@@ -206,4 +283,37 @@ def test_set_version_script_writes_version_and_prints_next_tag(capsys, monkeypat
     write.assert_called_once_with("1.2.3", refresh_lock=True)
     assert "Updated version to 1.2.3." in captured.out
     assert "Next release tag: v1.2.3" in captured.out
+    assert captured.err == ""
+
+
+def test_tag_version_script_rejects_dirty_version_files(capsys, monkeypatch) -> None:
+    tag_version = _load_script_module("tag_version")
+    monkeypatch.setattr(tag_version, "read_version_file", lambda: "1.2.3")
+    statuses = iter([["M pyproject.toml"], ["M pyproject.toml"]])
+    monkeypatch.setattr(tag_version, "get_worktree_status", lambda *paths: next(statuses))
+
+    exit_code = tag_version.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "Commit version files before tagging v1.2.3" in captured.err
+    assert "M pyproject.toml" in captured.err
+
+
+def test_tag_version_script_prints_sync_message(capsys, monkeypatch) -> None:
+    tag_version = _load_script_module("tag_version")
+    monkeypatch.setattr(tag_version, "read_version_file", lambda: "1.2.3")
+    monkeypatch.setattr(tag_version, "get_worktree_status", lambda *paths: [])
+    monkeypatch.setattr(
+        tag_version,
+        "sync_release_tag",
+        lambda version: Mock(message=f"Moved tag v{version} to HEAD from 1234567"),
+    )
+
+    exit_code = tag_version.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out.strip() == "Moved tag v1.2.3 to HEAD from 1234567"
     assert captured.err == ""

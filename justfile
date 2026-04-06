@@ -63,23 +63,7 @@ release-version version:
   just tag-version
 
 tag-version:
-  @version="$(PYTHONDONTWRITEBYTECODE=1 uv run python scripts/check_version.py --print)"; \
-  dirty="$(git status --short -- pyproject.toml uv.lock src/py_ydotool/VERSION)"; \
-  if [[ -n "$(git status --porcelain)" ]]; then \
-    if [[ -n "$dirty" ]]; then \
-      echo "Working tree is dirty. Commit version files before tagging v$version:" >&2; \
-      echo "$dirty" >&2; \
-    else \
-      echo "Working tree is dirty. Commit or stash changes before tagging v$version." >&2; \
-    fi; \
-    exit 1; \
-  fi; \
-  if git rev-parse "v$version" >/dev/null 2>&1; then \
-    echo "Tag already exists: v$version" >&2; \
-    exit 1; \
-  fi; \
-  git tag "v$version"; \
-  echo "Created tag v$version"
+  PYTHONDONTWRITEBYTECODE=1 uv run python scripts/tag_version.py
 
 build:
   uv build

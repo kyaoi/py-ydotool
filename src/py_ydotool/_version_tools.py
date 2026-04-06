@@ -19,6 +19,13 @@ class VersionCheckResult:
     message: str
 
 
+@dataclass(frozen=True, slots=True)
+class ReleaseTagSyncResult:
+    action: str
+    tag: str
+    message: str
+
+
 def read_version_file(path: Path = VERSION_FILE) -> str:
     return path.read_text(encoding="utf-8").strip()
 
@@ -102,12 +109,74 @@ def git_output(*args: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def git_output_optional(*args: str) -> list[str]:
+    result = subprocess.run(
+        ["git", *args],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def get_head_commit() -> str:
+    return git_output("rev-parse", "HEAD")[0]
+
+
+def get_tag_commit(tag: str) -> str | None:
+    lines = git_output_optional("rev-list", "-n", "1", tag)
+    if not lines:
+        return None
+    return lines[0]
+
+
+def get_worktree_status(*paths: str) -> list[str]:
+    args = ["status", "--short"]
+    if paths:
+        args.extend(["--", *paths])
+    return git_output(*args)
+
+
 def get_head_tags() -> list[str]:
     return git_output("tag", "--points-at", "HEAD")
 
 
 def get_repo_tags() -> list[str]:
     return git_output("tag")
+
+
+def sync_release_tag(version: str) -> ReleaseTagSyncResult:
+    tag = normalize_release_tag(version)
+    head_commit = get_head_commit()
+    existing_commit = get_tag_commit(tag)
+
+    if existing_commit == head_commit:
+        return ReleaseTagSyncResult(
+            action="unchanged",
+            tag=tag,
+            message=f"Tag already points at HEAD: {tag}",
+        )
+
+    command = ["git", "tag"]
+    if existing_commit is not None:
+        command.append("-f")
+    command.append(tag)
+    subprocess.run(command, check=True)
+
+    if existing_commit is None:
+        return ReleaseTagSyncResult(
+            action="created",
+            tag=tag,
+            message=f"Created tag {tag}",
+        )
+
+    return ReleaseTagSyncResult(
+        action="moved",
+        tag=tag,
+        message=f"Moved tag {tag} to HEAD from {existing_commit[:7]}",
+    )
 
 
 def evaluate_version_state(
