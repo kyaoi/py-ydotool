@@ -1,6 +1,6 @@
 [project]
 name = "py-ydotool"
-version = "0.2.2"
+version = "0.2.3"
 description = "A small Python wrapper around ydotool for Wayland automation."
 readme = "README.md"
 authors = [
@@ -46,7 +46,7 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+select = ["E", "F", "I", "UP", "B", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/py_ydotool/keys.py" = ["E741"]

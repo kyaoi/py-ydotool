@@ -59,17 +59,48 @@ just fix
 just lint
 just test
 just check
+just ci
 ```
 
-`just check` and `just ci` run `just fix` first, then lint and tests. That keeps routine
-repository checks friendly to small Ruff autofixes such as import sorting or line wrapping.
+Recommended flow:
+
+- `just fix`: apply safe Ruff autofixes and formatting
+- `just lint`: verify Ruff diagnostics **and** formatting without modifying files
+- `just check`: local developer loop (`fix` -> `lint` -> `test`)
+- `just ci`: CI-style verification (`lint` -> `test`)
+
+That keeps everyday checks friendly to small Ruff autofixes while still giving CI a pure verification command.
 
 After installation, the package also exposes a small CLI:
 
 - `py-ydotool doctor`
 - `py-ydotool setup`
+- `py-ydotool type "hello"`
+- `py-ydotool press ENTER`
+- `py-ydotool click --button right`
+- `py-ydotool move 400 220`
+- `py-ydotool drag 100 100 400 220`
+- `py-ydotool copy "hello" --backend wl-clipboard`
+- `py-ydotool paste-text "hello"`
 - `python -m py_ydotool doctor`
 - `python -m py_ydotool setup`
+
+### Implementation rules for this repo
+
+When changing `py-ydotool`, prefer these guardrails:
+
+- keep public API parameters and return values explicit, even without a separate type checker
+- normalize optional values at the boundary instead of carrying `None` deep into helper logic
+- reject explicit empty-string config values (for example `socket_path=""`, `group=""`, or `target_user=""`) instead of silently falling back to defaults
+- reject invalid public API values early (for example, negative or non-finite timeouts/delays, zero repeats, malformed button codes, non-bool feature flags, or non-int key/coordinate values) instead of letting them fail deep inside subprocess handling
+- validate composite mouse helpers before the first side effect so `click_at()`, `drag_to()`, `drag_between()`, and similar wrappers do not partially act before raising on a bad argument
+- normalize timeout selection and subprocess invocation through small helpers instead of repeating inline fallback logic across methods
+- use concrete file-like, process-like, and path-like types instead of vague `object` parameters or attributes
+- use small `TypedDict` payloads for stable JSON/report shapes instead of anonymous `dict[str, object]` return contracts
+- prefer small helpers with one responsibility over implicit branching inside long methods
+- when daemon or command behavior changes, update both README examples and regression tests in the same patch
+- keep backend selection and subprocess execution in separate helpers so clipboard failures stay easy to localize
+- keep `monkeypatch` focused on the real boundary under test (`subprocess`, `time`, `os`, backend detection) so tests stay readable during refactors
 
 ## Quick start
 
@@ -111,6 +142,112 @@ with gui.daemon():
 ```
 
 Those methods stay non-destructive by default: `doctor_*` inspects the environment and `setup_plan_*` only previews the one-time Linux changes.
+
+## One-shot CLI input helpers
+
+For quick shell-driven automation, the CLI now also exposes small direct input commands:
+
+```bash
+py-ydotool type "hello"
+py-ydotool press ENTER
+py-ydotool press CTRL V --hotkey
+py-ydotool click --button right
+py-ydotool move 400 220
+py-ydotool click-at 400 220 --button right
+py-ydotool double-click --button left
+py-ydotool drag 100 100 400 220
+py-ydotool copy "hello" --backend wl-clipboard
+py-ydotool get-clipboard
+py-ydotool paste
+py-ydotool paste-text "hello"
+```
+
+By default these commands use the same daemon helper as the Python API, so short one-shot invocations do not need a separate `ydotoold` bootstrap step. That means the CLI will:
+
+- start `ydotoold` when the requested socket is not already ready
+- reuse an already-ready daemon when one is already running on the same socket
+- keep a short quiet period after the last input before stopping an owned daemon
+
+Useful options:
+
+- `--no-daemon`: require an already-running daemon instead of auto-starting one
+- `--socket-path`: target a custom `ydotoold` socket for commands that talk to `ydotool`
+- `--command-timeout`: cap each input command or clipboard subprocess
+- `--ready-timeout`, `--stop-timeout`, `--settle-delay`: tune daemon lifecycle timing for unusual environments
+- `py-ydotool press ... --hotkey`: hold all keys together and release them in reverse order
+- `py-ydotool move X Y --relative`: treat `X` and `Y` as deltas instead of an absolute point
+- `py-ydotool click --button <name>` and related mouse commands: use `left`, `right`, `middle`, `side`, `extra`, `forward`, `back`, or `task`
+- `py-ydotool copy/get-clipboard/paste-text --backend <name>`: force a specific clipboard backend such as `wl-clipboard`, `xclip`, or `xsel`
+
+Key names for `press` are case-insensitive and accept the same constant names as `Key`, so `ENTER`, `CTRL`, `LEFT_SHIFT`, and numeric keycodes all work.
+
+### Clipboard command behavior
+
+The clipboard-related CLI commands have slightly different roles:
+
+- `py-ydotool copy TEXT`: write `TEXT` to the system clipboard only
+- `py-ydotool get-clipboard`: print the current clipboard text only
+- `py-ydotool paste`: send the paste hotkey only; it does not change clipboard contents first
+- `py-ydotool paste-text TEXT`: copy `TEXT` with the selected clipboard backend, then send the paste hotkey
+
+`copy` and `get-clipboard` do not talk to `ydotoold`, so they do not need `--socket-path` or daemon lifecycle tuning. When backend auto-detection is not what you want, force one explicitly:
+
+```bash
+py-ydotool copy "hello" --backend wl-clipboard
+py-ydotool get-clipboard --backend xclip
+py-ydotool paste-text "hello" --backend xsel
+```
+
+### Shell-side press-and-hold sequences
+
+`drag` is the easiest way to express a complete drag in one command. If you instead want to build a shell-side sequence from `mouse-down`, `move`, and `mouse-up`, keep all three commands on the same long-lived daemon/socket. Separate auto-daemon one-shot commands will start and stop their own daemon, so a held button or key will not survive across those restarts.
+
+One workable pattern is:
+
+```bash
+ydotoold --socket-path /tmp/py-ydotool-demo.sock &
+py-ydotool mouse-down --socket-path /tmp/py-ydotool-demo.sock --no-daemon
+py-ydotool move 25 0 --relative --socket-path /tmp/py-ydotool-demo.sock --no-daemon
+py-ydotool mouse-up --socket-path /tmp/py-ydotool-demo.sock --no-daemon
+```
+
+The same idea applies to longer key-hold or modifier sequences from the shell: reuse one daemon when the pressed state must stay active across multiple commands.
+
+### Common CLI recipes
+
+A few practical shell-side patterns:
+
+```bash
+# Hold a modifier combination together.
+py-ydotool press CTRL L --hotkey
+
+# Nudge the pointer relative to the current position.
+py-ydotool move 25 0 --relative
+py-ydotool move 0 25 --relative
+
+# Open a context menu at a specific point.
+py-ydotool click-at 640 360 --button right
+
+# Double-click the currently focused target.
+py-ydotool double-click
+
+# Drag from one absolute point to another.
+py-ydotool drag 100 100 400 220
+
+# Copy text into the clipboard without touching ydotoold.
+py-ydotool copy "hello from py-ydotool" --backend wl-clipboard
+
+# Read clipboard text into a shell variable.
+current_clipboard="$(py-ydotool get-clipboard --backend wl-clipboard)"
+printf '%s\n' "$current_clipboard"
+
+# Copy text, then send the paste hotkey to the focused app.
+py-ydotool paste-text "hello from py-ydotool" --backend wl-clipboard
+```
+
+`paste` and `paste-text` currently send the usual `Ctrl+V` paste hotkey. If your
+target app expects a different shortcut, split the operation into `copy` plus
+an explicit key sequence such as `py-ydotool press SHIFT INSERT --hotkey`.
 
 ## Setup and doctor
 
@@ -273,7 +410,10 @@ This requires:
 - `ydotool` and `ydotoold` in `PATH`
 - read/write access to `/dev/uinput`
 
-If those prerequisites are missing, the integration tests skip themselves with a short reason.
+If those prerequisites are missing, the integration tests skip themselves with a
+short reason. The current integration module covers real daemon lifecycle
+checks, one-shot CLI mouse/paste smoke, and clipboard round-trips for
+session-compatible backends.
 
 ## Basic usage
 
@@ -326,7 +466,7 @@ with gui.daemon():
     gui.press(Key.ENTER)
 ```
 
-By default, the daemon helper now keeps an owned `ydotoold` alive for a very short settle delay before stopping it, so trailing input events are less likely to be cut off when the Python process exits immediately after the last command. In many small scripts this removes the need for an extra manual `sleep(...)` at the end.
+By default, the daemon helper now tracks the most recent `ydotool` input command and waits only for the **remaining quiet period** before stopping an owned daemon. In practice this means short one-shot scripts usually do **not** need an extra manual `sleep(...)` at the end, while longer scripts avoid paying that delay twice.
 
 If your target app still needs a bit more time after the last event, you can tune that explicitly:
 
@@ -336,7 +476,7 @@ with gui.daemon(settle_delay=0.2):
     gui.press(Key.ENTER)
 ```
 
-Set `settle_delay=0` if you want the old immediate-stop behavior.
+Set `settle_delay=0` if you want the old immediate-stop behavior. When left at the default, it acts as a post-input quiet-period target rather than an unconditional fixed sleep on every shutdown. Negative timing values are rejected early so bad configuration fails at the Python API boundary instead of later during shutdown.
 
 `with ...:` uses a **context manager**.
 If `ydotoold` is already running on the configured socket, `py-ydotool` reuses it and leaves it running.
@@ -495,6 +635,24 @@ from py_ydotool import PyYDoTool
 gui = PyYDoTool(clipboard_backend="wl-clipboard")
 ```
 
+Or inspect what the current machine can use before choosing one:
+
+```python
+from py_ydotool import available_clipboard_backends
+
+print([backend.name for backend in available_clipboard_backends()])
+```
+
+#### Troubleshooting clipboard backends
+
+`py-ydotool doctor` focuses on `ydotool` / `ydotoold` / `/dev/uinput`. Clipboard issues are usually a separate boundary, so prefer checking the clipboard backend directly when copy/paste fails.
+
+- if backend auto-detection picked the wrong tool for the current session, pin `clipboard_backend=...` explicitly
+- if you pin a backend that is not installed, `ClipboardUnavailableError` now includes both the missing commands and the backends that *are* available
+- under native Wayland sessions, prefer `wl-clipboard` when possible
+- `xclip` and `xsel` still depend on an X11 / XWayland clipboard being available to the process
+- backend detection only checks command availability; it does not bypass display/session permissions
+
 ### Hold keys and mouse buttons
 
 ```python
@@ -520,7 +678,7 @@ gui.click()
 gui.right_click()
 gui.double_click_at(400, 220)
 gui.drag_between(500, 300, 700, 300)
-gui.click_many(MouseButton.LEFT, repeat=3, next_delay_ms=100)
+gui.click_many(3, button=MouseButton.LEFT, next_delay_ms=100)
 ```
 
 ### Timeouts and failure handling

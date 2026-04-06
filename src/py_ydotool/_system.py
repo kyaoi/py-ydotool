@@ -11,7 +11,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, TypedDict
 
 from .client import PyYDoTool
 
@@ -29,6 +29,35 @@ _STATUS_ORDER = {"ERROR": 2, "WARN": 1, "OK": 0}
 
 _MANAGED_ITEM_NAMES = ("udev-rule", "modules-load", "user-group")
 _CORE_ITEM_NAMES = ("ydotool", "ydotoold", "/dev/uinput", "socket-path")
+
+
+class DoctorReadinessPayload(TypedDict):
+    usable_now: bool
+    managed_setup_complete: bool
+    setup_apply_path: str
+
+
+class DoctorSummaryPayload(TypedDict):
+    overall_status: str
+    ok: int
+    warn: int
+    error: int
+
+
+class DoctorItemPayload(TypedDict):
+    name: str
+    status: str
+    summary: str
+    details: list[str]
+    action: str | None
+
+
+class DoctorReportPayload(TypedDict):
+    socket_path: str
+    summary: DoctorSummaryPayload
+    readiness: DoctorReadinessPayload
+    items: list[DoctorItemPayload]
+    next_actions: list[str]
 
 
 @dataclass(frozen=True)
@@ -391,15 +420,16 @@ def _collect_user_group_status(user: str | None, group: str) -> DoctorItem:
 def collect_doctor_report(
     *,
     socket_path: str | None = None,
-    paths: SystemPaths = SystemPaths(),
+    paths: SystemPaths | None = None,
     user: str | None = None,
     group: str = DEFAULT_UDEV_GROUP,
 ) -> DoctorReport:
     resolved_socket_path = socket_path or default_socket_path()
     resolved_user = user or resolve_target_user()
+    resolved_paths = SystemPaths() if paths is None else paths
     items: list[DoctorItem] = [
-        _collect_rule_status(paths, group),
-        _collect_modules_load_status(paths),
+        _collect_rule_status(resolved_paths, group),
+        _collect_modules_load_status(resolved_paths),
         _collect_user_group_status(resolved_user, group),
         _collect_privilege_helper_status(),
     ]
@@ -448,7 +478,7 @@ def collect_doctor_report(
             )
         )
 
-    dev_uinput = paths.dev_uinput
+    dev_uinput = resolved_paths.dev_uinput
     if not dev_uinput.exists():
         items.append(
             DoctorItem(
@@ -628,7 +658,7 @@ def _report_item_map(report: DoctorReport) -> dict[str, DoctorItem]:
     return {item.name: item for item in report.items}
 
 
-def _doctor_readiness_summary(report: DoctorReport) -> dict[str, object]:
+def _doctor_readiness_summary(report: DoctorReport) -> DoctorReadinessPayload:
     item_map = _report_item_map(report)
     managed_statuses = [item_map[name].status for name in _MANAGED_ITEM_NAMES if name in item_map]
     core_statuses = {name: item_map[name].status for name in _CORE_ITEM_NAMES if name in item_map}
@@ -662,7 +692,7 @@ def _doctor_readiness_summary(report: DoctorReport) -> dict[str, object]:
     }
 
 
-def doctor_report_to_dict(report: DoctorReport) -> dict[str, object]:
+def doctor_report_to_dict(report: DoctorReport) -> DoctorReportPayload:
     return {
         "socket_path": report.socket_path,
         "summary": {
@@ -746,11 +776,12 @@ def _build_rule_text(group: str) -> str:
 def build_setup_plan(
     options: SetupOptions,
     *,
-    paths: SystemPaths = SystemPaths(),
+    paths: SystemPaths | None = None,
 ) -> SetupPlan:
-    rule_path = paths.udev_rules_dir / DEFAULT_UDEV_RULE_FILENAME
+    resolved_paths = SystemPaths() if paths is None else paths
+    rule_path = resolved_paths.udev_rules_dir / DEFAULT_UDEV_RULE_FILENAME
     modules_load_path = (
-        paths.modules_load_dir / DEFAULT_MODULES_LOAD_FILENAME
+        resolved_paths.modules_load_dir / DEFAULT_MODULES_LOAD_FILENAME
         if options.ensure_module_loaded_on_boot
         else None
     )
@@ -773,11 +804,11 @@ def build_setup_plan(
     if modules_load_path is not None:
         will_write_modules_load = _read_text_if_exists(modules_load_path) != MODULES_LOAD_CONTENT
 
-    dev_exists = paths.dev_uinput.exists()
+    dev_exists = resolved_paths.dev_uinput.exists()
     current_mode = None
     current_group = None
     if dev_exists:
-        st = paths.dev_uinput.stat(follow_symlinks=False)
+        st = resolved_paths.dev_uinput.stat(follow_symlinks=False)
         current_mode = stat.S_IMODE(st.st_mode)
         current_group = _safe_group_name(st.st_gid)
 
@@ -966,8 +997,10 @@ def apply_setup_plan(
     plan: SetupPlan,
     *,
     options: SetupOptions,
-    paths: SystemPaths = SystemPaths(),
+    paths: SystemPaths | None = None,
 ) -> None:
+    resolved_paths = SystemPaths() if paths is None else paths
+
     if not options.privileged:
         raise PermissionError("setup apply requires administrator privileges")
 
@@ -989,11 +1022,11 @@ def apply_setup_plan(
     if plan.will_reload_udev_rules:
         _run_checked(["udevadm", "control", "--reload-rules"])
 
-    if plan.will_update_runtime_permissions and paths.dev_uinput.exists():
+    if plan.will_update_runtime_permissions and resolved_paths.dev_uinput.exists():
         group = grp.getgrnam(plan.group)
-        st = paths.dev_uinput.stat(follow_symlinks=False)
-        os.chown(paths.dev_uinput, st.st_uid, group.gr_gid, follow_symlinks=False)
-        os.chmod(paths.dev_uinput, 0o660, follow_symlinks=False)
+        st = resolved_paths.dev_uinput.stat(follow_symlinks=False)
+        os.chown(resolved_paths.dev_uinput, st.st_uid, group.gr_gid, follow_symlinks=False)
+        os.chmod(resolved_paths.dev_uinput, 0o660, follow_symlinks=False)
 
 
 def _should_reexec_privileged(options: SetupOptions) -> bool:

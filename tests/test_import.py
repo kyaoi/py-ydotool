@@ -9,6 +9,7 @@ from py_ydotool import (
     SetupPlan,
     YDoToolDaemon,
     __version__,
+    available_clipboard_backends,
     collect_doctor_report,
     render_doctor_report,
 )
@@ -39,3 +40,7 @@ def test_system_helpers_export() -> None:
     assert SetupPlan is not None
     assert collect_doctor_report is not None
     assert render_doctor_report is not None
+
+
+def test_clipboard_helpers_export() -> None:
+    assert available_clipboard_backends is not None

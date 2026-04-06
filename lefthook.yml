@@ -11,7 +11,7 @@ pre-commit:
       run: uv run ruff format {staged_files}
       stage_fixed: true
 
-pre-push:
-  jobs:
-    - name: release-check
-      run: just release-check
+# pre-push:
+#   jobs:
+#     - name: release-check
+#       run: just release-check

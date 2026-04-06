@@ -11,6 +11,7 @@ fmt:
 
 lint:
   uv run ruff check .
+  uv run ruff format --check .
 
 fix:
   uv run ruff check --fix .
@@ -37,9 +38,14 @@ doctor-strict-json:
 setup-dry-run:
   uv run python -m py_ydotool setup --dry-run
 
-check: fix lint test
+check:
+  just fix
+  just lint
+  just test
 
-ci: fix lint test
+ci:
+  just lint
+  just test
 
 version:
   PYTHONDONTWRITEBYTECODE=1 uv run python scripts/check_version.py --print

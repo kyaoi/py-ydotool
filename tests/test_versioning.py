@@ -1,3 +1,4 @@
+import importlib.util
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -13,6 +14,16 @@ from py_ydotool._version_tools import (
     replace_pyproject_version_text,
     write_version,
 )
+
+
+def _load_script_module(script_name: str):
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / f"{script_name}.py"
+    spec = importlib.util.spec_from_file_location(f"test_{script_name}_script", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_version_file_matches_runtime_version() -> None:
@@ -146,3 +157,53 @@ def test_write_version_refreshes_lock_when_requested(tmp_path: Path, monkeypatch
     )
 
     refresh.assert_called_once_with()
+
+
+def test_check_version_script_prints_current_version(capsys, monkeypatch) -> None:
+    check_version = _load_script_module("check_version")
+    monkeypatch.setattr("sys.argv", ["check_version.py", "--print"])
+
+    exit_code = check_version.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out.strip() == read_version_file()
+    assert captured.err == ""
+
+
+def test_check_version_script_reports_failure_to_stderr(capsys, monkeypatch) -> None:
+    check_version = _load_script_module("check_version")
+    monkeypatch.setattr(
+        check_version,
+        "check_repository_version",
+        lambda: evaluate_version_state(
+            version_file_version="0.1.0",
+            pyproject_version="0.1.1",
+            head_tags=[],
+            repo_tags=[],
+        ),
+    )
+    monkeypatch.setattr("sys.argv", ["check_version.py"])
+
+    exit_code = check_version.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Version mismatch" in captured.err
+    assert captured.out == ""
+
+
+def test_set_version_script_writes_version_and_prints_next_tag(capsys, monkeypatch) -> None:
+    set_version = _load_script_module("set_version")
+    write = Mock()
+    monkeypatch.setattr(set_version, "write_version", write)
+    monkeypatch.setattr("sys.argv", ["set_version.py", "1.2.3"])
+
+    exit_code = set_version.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    write.assert_called_once_with("1.2.3", refresh_lock=True)
+    assert "Updated version to 1.2.3." in captured.out
+    assert "Next release tag: v1.2.3" in captured.out
+    assert captured.err == ""

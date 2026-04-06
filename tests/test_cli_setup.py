@@ -586,6 +586,61 @@ def test_main_help_includes_quick_start_examples(capsys) -> None:
     assert "Normal Python usage should stay non-root." in captured.out
     assert "setup" in captured.out
     assert "doctor" in captured.out
+    assert "type" in captured.out
+    assert "press" in captured.out
+    assert "click" in captured.out
+    assert "copy" in captured.out
+    assert "paste-text" in captured.out
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_snippets"),
+    [
+        (
+            ["copy", "--help"],
+            [
+                "selected backend",
+                "without touching ydotoold",
+                "--backend BACKEND",
+            ],
+        ),
+        (
+            ["get-clipboard", "--help"],
+            [
+                "selected backend",
+                "without touching ydotoold",
+                "--backend BACKEND",
+            ],
+        ),
+        (
+            ["paste", "--help"],
+            [
+                "usual Ctrl+V paste hotkey",
+                "This does not modify clipboard contents first",
+            ],
+        ),
+        (
+            ["paste-text", "--help"],
+            [
+                "selected backend",
+                "usual Ctrl+V paste hotkey",
+                "--backend BACKEND",
+            ],
+        ),
+    ],
+)
+def test_clipboard_command_help_explains_runtime_behavior(
+    argv: list[str],
+    expected_snippets: list[str],
+    capsys,
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(argv)
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 0
+    for snippet in expected_snippets:
+        assert snippet in captured.out
 
 
 def test_doctor_help_includes_examples(capsys) -> None:
@@ -647,3 +702,21 @@ def test_setup_postcheck_explains_relogin_when_group_change_is_pending(capsys, m
     assert "The current login session may still be using the old group membership." in out
     assert "Log out and back in as `alice`" in out
     assert "doctor --group input" in out
+
+
+def test_cli_rejects_empty_group_argument(capsys) -> None:
+    parser = cli._build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["doctor", "--group", ""])
+
+    assert "group must not be empty" in capsys.readouterr().err
+
+
+def test_cli_rejects_empty_socket_path_argument(capsys) -> None:
+    parser = cli._build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["setup", "--socket-path", ""])
+
+    assert "socket_path must not be empty" in capsys.readouterr().err

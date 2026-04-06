@@ -13,7 +13,11 @@ from ._system import (
 )
 from ._version import __version__
 from .client import MouseButton, PyYDoTool, YDoToolDaemon
-from .clipboard import ClipboardBackend, detect_clipboard_backend
+from .clipboard import (
+    ClipboardBackend,
+    available_clipboard_backends,
+    detect_clipboard_backend,
+)
 from .exceptions import (
     ClipboardUnavailableError,
     CommandExecutionError,
@@ -27,7 +31,6 @@ from .exceptions import (
 from .keys import Key
 
 __all__ = [
-    "__version__",
     "ClipboardBackend",
     "ClipboardUnavailableError",
     "CommandExecutionError",
@@ -46,6 +49,8 @@ __all__ = [
     "SetupPlan",
     "SystemPaths",
     "YDoToolDaemon",
+    "__version__",
+    "available_clipboard_backends",
     "build_setup_plan",
     "collect_doctor_report",
     "detect_clipboard_backend",

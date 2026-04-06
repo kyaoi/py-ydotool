@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import math
 import os
 import shutil
 import stat
@@ -10,9 +11,14 @@ import time
 from collections.abc import Iterable, Iterator
 from contextlib import ContextDecorator, contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from types import TracebackType
+from typing import TYPE_CHECKING, TextIO
 
-from .clipboard import ClipboardBackend, detect_clipboard_backend
+from .clipboard import ClipboardBackend, ClipboardOperation, detect_clipboard_backend
+
+if TYPE_CHECKING:
+    from ._system import DoctorReport, SetupPlan, SystemPaths
+
 from .exceptions import (
     CommandExecutionError,
     CommandNotFoundError,
@@ -61,9 +67,154 @@ def _socket_help() -> str:
     )
 
 
-def _join_output(stdout: Any, stderr: Any) -> str:
+ProcessOutputValue = str | bytes | None
+
+
+def _output_to_text(value: ProcessOutputValue) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _join_output(stdout: ProcessOutputValue, stderr: ProcessOutputValue) -> str:
     return "\n".join(
-        part.strip() for part in (str(stdout or ""), str(stderr or "")) if str(part or "").strip()
+        part.strip() for part in (_output_to_text(stdout), _output_to_text(stderr)) if part.strip()
+    )
+
+
+def _require_text(name: str, value: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a str")
+    return value
+
+
+def _require_non_empty_text(name: str, value: str) -> str:
+    value = _require_text(name, value)
+    if not value:
+        raise ValueError(f"{name} must not be empty")
+    return value
+
+
+def _require_bool(name: str, value: bool) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a bool")
+    return value
+
+
+def _normalize_optional_text(name: str, value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _require_non_empty_text(name, value)
+
+
+def _normalize_text_sequence(name: str, values: Iterable[str]) -> tuple[str, ...]:
+    return tuple(_require_text(f"{name}[{index}]", value) for index, value in enumerate(values))
+
+
+def _normalize_socket_path(socket_path: str | None) -> str:
+    if socket_path is not None:
+        return _require_non_empty_text("socket_path", socket_path)
+
+    env_socket_path = os.environ.get("YDOTOOL_SOCKET")
+    if env_socket_path:
+        return env_socket_path
+    return "/tmp/.ydotool_socket"
+
+
+def _require_int(name: str, value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an int")
+    return value
+
+
+def _require_real_number(name: str, value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{name} must be a real number")
+    real_value = float(value)
+    if not math.isfinite(real_value):
+        raise ValueError(f"{name} must be finite")
+    return real_value
+
+
+def _require_non_negative(name: str, value: float) -> float:
+    real_value = _require_real_number(name, value)
+    if real_value < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return real_value
+
+
+def _normalize_timeout(name: str, value: float | None) -> float | None:
+    if value is None:
+        return None
+    return _require_non_negative(name, value)
+
+
+def _resolve_timeout(
+    configured_timeout: float | None,
+    timeout: float | None,
+) -> float | None:
+    if timeout is None:
+        return configured_timeout
+    return _normalize_timeout("timeout", timeout)
+
+
+def _require_non_negative_int(name: str, value: int) -> int:
+    value = _require_int(name, value)
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return value
+
+
+def _require_positive_int(name: str, value: int) -> int:
+    value = _require_int(name, value)
+    if value <= 0:
+        raise ValueError(f"{name} must be > 0")
+    return value
+
+
+def _normalize_delay_ms(name: str, value: int | None) -> int | None:
+    if value is None:
+        return None
+    return _require_non_negative_int(name, value)
+
+
+def _normalize_repeat(name: str, value: int | None) -> int | None:
+    if value is None:
+        return None
+    return _require_positive_int(name, value)
+
+
+def _normalize_keycodes(keycodes: Iterable[int]) -> list[int]:
+    return [_require_non_negative_int("keycode", keycode) for keycode in keycodes]
+
+
+def _normalize_mouse_button(button: str) -> str:
+    _require_text("button", button)
+    try:
+        int(button, 16)
+    except ValueError as exc:
+        raise ValueError(
+            "button must be a hexadecimal string like MouseButton.LEFT or '0xC0'"
+        ) from exc
+    return button
+
+
+def _normalize_point(x_name: str, x: int, y_name: str, y: int) -> tuple[int, int]:
+    return _require_int(x_name, x), _require_int(y_name, y)
+
+
+def _normalize_click_arguments(
+    button: str,
+    *,
+    repeat: int | None = None,
+    next_delay_ms: int | None = None,
+) -> tuple[str, int | None, int | None]:
+    return (
+        _normalize_mouse_button(button),
+        _normalize_repeat("repeat", repeat),
+        _normalize_delay_ms("next_delay_ms", next_delay_ms),
     )
 
 
@@ -92,6 +243,8 @@ def _help_for_message(message: str) -> str:
 
 
 class YDoToolDaemon(ContextDecorator):
+    _NON_INPUT_COMMANDS = frozenset({"debug"})
+
     def __init__(
         self,
         tool: PyYDoTool,
@@ -103,14 +256,15 @@ class YDoToolDaemon(ContextDecorator):
         clean_stale_socket: bool = True,
     ) -> None:
         self._tool = tool
-        self.ready_timeout = ready_timeout
-        self.stop_timeout = stop_timeout
-        self.settle_delay = max(0.0, settle_delay)
-        self.extra_args = tuple(extra_args)
-        self.clean_stale_socket = clean_stale_socket
+        self.ready_timeout = _require_non_negative("ready_timeout", ready_timeout)
+        self.stop_timeout = _require_non_negative("stop_timeout", stop_timeout)
+        self.settle_delay = _require_non_negative("settle_delay", settle_delay)
+        self.extra_args = _normalize_text_sequence("extra_args", extra_args)
+        self.clean_stale_socket = _require_bool("clean_stale_socket", clean_stale_socket)
         self._process: subprocess.Popen[str] | None = None
         self._owns_process = False
-        self._stderr_file: object | None = None
+        self._stderr_file: TextIO | None = None
+        self._last_activity_at: float | None = None
         self._atexit_registered = False
         self._atexit_callback = self._stop_at_exit
 
@@ -157,7 +311,7 @@ class YDoToolDaemon(ContextDecorator):
         except FileNotFoundError:
             return
 
-    def _open_stderr_file(self):
+    def _open_stderr_file(self) -> TextIO:
         self._close_stderr_file()
         self._stderr_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
         return self._stderr_file
@@ -180,6 +334,24 @@ class YDoToolDaemon(ContextDecorator):
         if not stderr:
             return ""
         return f"\nstderr: {stderr}"
+
+    @classmethod
+    def _is_input_command(cls, command_name: str) -> bool:
+        return command_name not in cls._NON_INPUT_COMMANDS
+
+    def _note_tool_activity(self, command_name: str, *, completed_at: float) -> None:
+        if not self._is_input_command(command_name):
+            return
+        self._last_activity_at = completed_at
+
+    def _wait_for_quiet_period(self) -> None:
+        if self.settle_delay <= 0 or self._last_activity_at is None:
+            return
+
+        elapsed = time.monotonic() - self._last_activity_at
+        remaining = self.settle_delay - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
 
     def _format_socket_state(self) -> str:
         exists = self._socket_file_exists()
@@ -214,6 +386,7 @@ class YDoToolDaemon(ContextDecorator):
 
         if self._is_socket_ready():
             self._owns_process = False
+            self._tool._register_daemon_context(self)
             self._unregister_atexit()
             return self
 
@@ -241,6 +414,7 @@ class YDoToolDaemon(ContextDecorator):
                 )
                 raise DaemonStartError(f"{message}{_help_for_message(message)}")
             if self._is_socket_ready():
+                self._tool._register_daemon_context(self)
                 return self
             time.sleep(0.05)
 
@@ -264,6 +438,8 @@ class YDoToolDaemon(ContextDecorator):
 
     def stop(self) -> None:
         if not self._owns_process or self._process is None:
+            self._tool._unregister_daemon_context(self)
+            self._last_activity_at = None
             self._process = None
             self._owns_process = False
             self._unregister_atexit()
@@ -273,8 +449,7 @@ class YDoToolDaemon(ContextDecorator):
         process = self._process
         try:
             if process.poll() is None:
-                if self.settle_delay > 0:
-                    time.sleep(self.settle_delay)
+                self._wait_for_quiet_period()
                 process.terminate()
                 try:
                     process.wait(timeout=self.stop_timeout)
@@ -283,6 +458,8 @@ class YDoToolDaemon(ContextDecorator):
                     process.wait(timeout=self.stop_timeout)
         finally:
             self._cleanup_socket_after_stop()
+            self._tool._unregister_daemon_context(self)
+            self._last_activity_at = None
             self._process = None
             self._owns_process = False
             self._unregister_atexit()
@@ -291,7 +468,12 @@ class YDoToolDaemon(ContextDecorator):
     def __enter__(self) -> YDoToolDaemon:
         return self.start()
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         self.stop()
         return False
 
@@ -305,14 +487,25 @@ class PyYDoTool:
     command_timeout: float | None = 5.0
     _env: dict[str, str] = field(init=False, repr=False)
     _clipboard: ClipboardBackend | None = field(init=False, repr=False, default=None)
+    _active_daemons: list[YDoToolDaemon] = field(init=False, repr=False, default_factory=list)
 
     def __post_init__(self) -> None:
-        self.socket_path = self.socket_path or os.environ.get(
-            "YDOTOOL_SOCKET",
-            "/tmp/.ydotool_socket",
+        self.socket_path = _normalize_socket_path(self.socket_path)
+        self.clipboard_backend = _normalize_optional_text(
+            "clipboard_backend",
+            self.clipboard_backend,
         )
         self._env = os.environ.copy()
         self._env["YDOTOOL_SOCKET"] = self.socket_path
+        self.type_delay_ms = _require_non_negative_int(
+            "type_delay_ms",
+            self.type_delay_ms,
+        )
+        self.command_timeout = _normalize_timeout("command_timeout", self.command_timeout)
+        self.check_commands_on_init = _require_bool(
+            "check_commands_on_init",
+            self.check_commands_on_init,
+        )
 
         if self.check_commands_on_init:
             self._ensure_command("ydotool")
@@ -323,35 +516,73 @@ class PyYDoTool:
                 f"Required command not found: {name}{_missing_command_help(name)}"
             )
 
+    def _register_daemon_context(self, daemon: YDoToolDaemon) -> None:
+        if daemon not in self._active_daemons:
+            self._active_daemons.append(daemon)
+
+    def _unregister_daemon_context(self, daemon: YDoToolDaemon) -> None:
+        if daemon in self._active_daemons:
+            self._active_daemons.remove(daemon)
+
+    def _record_daemon_activity(self, command_name: str) -> None:
+        if not self._active_daemons:
+            return
+
+        completed_at = time.monotonic()
+        for daemon in tuple(self._active_daemons):
+            daemon._note_tool_activity(command_name, completed_at=completed_at)
+
+    def _run_subprocess(
+        self,
+        command: list[str],
+        *,
+        input_text: str | None = None,
+        timeout: float | None = None,
+        missing_command_name: str,
+        error_prefix: str,
+    ) -> subprocess.CompletedProcess[str]:
+        resolved_timeout = _resolve_timeout(self.command_timeout, timeout)
+        try:
+            return subprocess.run(
+                command,
+                text=True,
+                input=input_text,
+                capture_output=True,
+                check=True,
+                env=self._env,
+                timeout=resolved_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            cmd = exc.cmd if isinstance(exc.cmd, list) else [str(exc.cmd)]
+            raise CommandTimeoutError(
+                f"{error_prefix} timed out after {exc.timeout} seconds: {' '.join(cmd)}"
+            ) from exc
+        except FileNotFoundError as exc:
+            raise CommandNotFoundError(
+                "Required command not found: "
+                f"{missing_command_name}{_missing_command_help(missing_command_name)}"
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            help_text = _help_for_message(_join_output(exc.stdout, exc.stderr))
+            raise CommandExecutionError(
+                f"{error_prefix} failed: {' '.join(exc.cmd)}\n"
+                f"stdout: {exc.stdout}\nstderr: {exc.stderr}{help_text}"
+            ) from exc
+
     def _run(
         self,
         *args: str,
         timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        try:
-            return subprocess.run(
-                ["ydotool", *args],
-                text=True,
-                capture_output=True,
-                check=True,
-                env=self._env,
-                timeout=self.command_timeout if timeout is None else timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            cmd = exc.cmd if isinstance(exc.cmd, list) else [str(exc.cmd)]
-            raise CommandTimeoutError(
-                f"ydotool timed out after {exc.timeout} seconds: {' '.join(cmd)}"
-            ) from exc
-        except FileNotFoundError as exc:
-            raise CommandNotFoundError(
-                f"Required command not found: ydotool{_missing_command_help('ydotool')}"
-            ) from exc
-        except subprocess.CalledProcessError as exc:
-            help_text = _help_for_message(_join_output(exc.stdout, exc.stderr))
-            raise CommandExecutionError(
-                f"ydotool failed: {' '.join(exc.cmd)}\nstdout: {exc.stdout}\nstderr: {exc.stderr}"
-                f"{help_text}"
-            ) from exc
+        completed = self._run_subprocess(
+            ["ydotool", *args],
+            timeout=timeout,
+            missing_command_name="ydotool",
+            error_prefix="ydotool",
+        )
+        if args:
+            self._record_daemon_activity(args[0])
+        return completed
 
     def _run_command(
         self,
@@ -360,35 +591,31 @@ class PyYDoTool:
         input_text: str | None = None,
         timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        try:
-            return subprocess.run(
-                command,
-                text=True,
-                input=input_text,
-                capture_output=True,
-                check=True,
-                timeout=self.command_timeout if timeout is None else timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            cmd = exc.cmd if isinstance(exc.cmd, list) else [str(exc.cmd)]
-            raise CommandTimeoutError(
-                f"command timed out after {exc.timeout} seconds: {' '.join(cmd)}"
-            ) from exc
-        except FileNotFoundError as exc:
-            raise CommandNotFoundError(
-                f"Required command not found: {command[0]}{_missing_command_help(command[0])}"
-            ) from exc
-        except subprocess.CalledProcessError as exc:
-            help_text = _help_for_message(_join_output(exc.stdout, exc.stderr))
-            raise CommandExecutionError(
-                f"command failed: {' '.join(exc.cmd)}\nstdout: {exc.stdout}\nstderr: {exc.stderr}"
-                f"{help_text}"
-            ) from exc
+        return self._run_subprocess(
+            command,
+            input_text=input_text,
+            timeout=timeout,
+            missing_command_name=command[0],
+            error_prefix="command",
+        )
 
     def _get_clipboard_backend(self) -> ClipboardBackend:
         if self._clipboard is None:
             self._clipboard = detect_clipboard_backend(self.clipboard_backend)
         return self._clipboard
+
+    def _run_clipboard_command(
+        self,
+        operation: ClipboardOperation,
+        *,
+        input_text: str | None = None,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        backend = self._get_clipboard_backend()
+        command = backend.command_for(operation)
+        if timeout is None:
+            return self._run_command(command, input_text=input_text)
+        return self._run_command(command, input_text=input_text, timeout=timeout)
 
     def daemon(
         self,
@@ -405,15 +632,17 @@ class PyYDoTool:
             stop_timeout=stop_timeout,
             settle_delay=settle_delay,
             extra_args=extra_args,
-            clean_stale_socket=clean_stale_socket,
+            clean_stale_socket=_require_bool("clean_stale_socket", clean_stale_socket),
         )
 
     @staticmethod
     def _event(keycode: int, pressed: bool) -> str:
+        keycode = _require_non_negative_int("keycode", keycode)
         return f"{keycode}:{1 if pressed else 0}"
 
     @staticmethod
     def _mouse_event(button: str, *, down: bool = False, up: bool = False) -> str:
+        button = _normalize_mouse_button(button)
         base = int(button, 16) & 0x3F
         mask = 0
         if down:
@@ -427,16 +656,18 @@ class PyYDoTool:
         *,
         user: str | None = None,
         group: str = "input",
-        paths=None,
-    ):
+        paths: SystemPaths | None = None,
+    ) -> DoctorReport:
         from ._system import SystemPaths, collect_doctor_report
 
         resolved_paths = SystemPaths() if paths is None else paths
+        resolved_user = _normalize_optional_text("user", user)
+        resolved_group = _require_non_empty_text("group", group)
         return collect_doctor_report(
             socket_path=self.socket_path,
             paths=resolved_paths,
-            user=user,
-            group=group,
+            user=resolved_user,
+            group=resolved_group,
         )
 
     def doctor_text(
@@ -444,8 +675,8 @@ class PyYDoTool:
         *,
         user: str | None = None,
         group: str = "input",
-        paths=None,
-        stream=None,
+        paths: SystemPaths | None = None,
+        stream: TextIO | None = None,
     ) -> str:
         from ._system import render_doctor_report
 
@@ -457,8 +688,8 @@ class PyYDoTool:
         *,
         user: str | None = None,
         group: str = "input",
-        paths=None,
-        stream=None,
+        paths: SystemPaths | None = None,
+        stream: TextIO | None = None,
     ) -> str:
         from ._system import render_doctor_report_json
 
@@ -474,18 +705,23 @@ class PyYDoTool:
         add_user_to_group: bool = True,
         dry_run: bool = False,
         privileged: bool = False,
-        paths=None,
-    ):
+        paths: SystemPaths | None = None,
+    ) -> SetupPlan:
         from ._system import SetupOptions, SystemPaths, build_setup_plan
 
         resolved_paths = SystemPaths() if paths is None else paths
+        resolved_target_user = _normalize_optional_text("target_user", target_user)
+        resolved_group = _require_non_empty_text("group", group)
         options = SetupOptions(
-            target_user=target_user,
-            group=group,
-            ensure_module_loaded_on_boot=ensure_module_loaded_on_boot,
-            add_user_to_group=add_user_to_group,
-            dry_run=dry_run,
-            privileged=privileged,
+            target_user=resolved_target_user,
+            group=resolved_group,
+            ensure_module_loaded_on_boot=_require_bool(
+                "ensure_module_loaded_on_boot",
+                ensure_module_loaded_on_boot,
+            ),
+            add_user_to_group=_require_bool("add_user_to_group", add_user_to_group),
+            dry_run=_require_bool("dry_run", dry_run),
+            privileged=_require_bool("privileged", privileged),
             socket_path=self.socket_path,
         )
         return build_setup_plan(options, paths=resolved_paths)
@@ -499,7 +735,7 @@ class PyYDoTool:
         add_user_to_group: bool = True,
         dry_run: bool = True,
         privileged: bool = False,
-        paths=None,
+        paths: SystemPaths | None = None,
     ) -> str:
         from ._system import render_setup_plan
 
@@ -515,6 +751,7 @@ class PyYDoTool:
         return render_setup_plan(plan, dry_run=dry_run)
 
     def sleep(self, seconds: float) -> None:
+        seconds = _require_non_negative("seconds", seconds)
         time.sleep(seconds)
 
     def key_down(self, keycode: int) -> None:
@@ -531,16 +768,19 @@ class PyYDoTool:
         )
 
     def press_many(self, keycodes: Iterable[int], interval: float = 0.0) -> None:
-        for keycode in keycodes:
+        interval = _require_non_negative("interval", interval)
+        normalized_keycodes = _normalize_keycodes(keycodes)
+        for keycode in normalized_keycodes:
             self.press(keycode)
             if interval > 0:
                 time.sleep(interval)
 
     @contextmanager
     def hold_keys(self, *keycodes: int) -> Iterator[None]:
+        normalized_keycodes = _normalize_keycodes(keycodes)
         pressed: list[int] = []
         try:
-            for keycode in keycodes:
+            for keycode in normalized_keycodes:
                 self.key_down(keycode)
                 pressed.append(keycode)
             yield
@@ -553,6 +793,7 @@ class PyYDoTool:
             return None
 
     def type(self, text: str) -> None:
+        text = _require_text("text", text)
         args = ["type"]
         if self.type_delay_ms > 0:
             args.extend(["--key-delay", str(self.type_delay_ms)])
@@ -568,6 +809,9 @@ class PyYDoTool:
         prefer_paste: bool = False,
         paste_threshold: int = 128,
     ) -> None:
+        text = _require_text("text", text)
+        paste_threshold = _require_non_negative_int("paste_threshold", paste_threshold)
+        prefer_paste = _require_bool("prefer_paste", prefer_paste)
         if prefer_paste or "\n" in text or len(text) >= paste_threshold:
             self.paste_text(text)
         else:
@@ -580,6 +824,12 @@ class PyYDoTool:
         repeat: int | None = None,
         next_delay_ms: int | None = None,
     ) -> None:
+        button, repeat, next_delay_ms = _normalize_click_arguments(
+            button,
+            repeat=repeat,
+            next_delay_ms=next_delay_ms,
+        )
+
         args = ["click"]
         if next_delay_ms is not None:
             args.extend(["--next-delay", str(next_delay_ms)])
@@ -598,12 +848,15 @@ class PyYDoTool:
         self.click(button, repeat=repeat, next_delay_ms=next_delay_ms)
 
     def double_click(self, button: str = MouseButton.LEFT, interval: float = 0.1) -> None:
+        interval = _require_non_negative("interval", interval)
         self.click_many(2, button=button, next_delay_ms=int(interval * 1000))
 
     def mouse_down(self, button: str = MouseButton.LEFT) -> None:
+        button = _normalize_mouse_button(button)
         self._run("click", self._mouse_event(button, down=True))
 
     def mouse_up(self, button: str = MouseButton.LEFT) -> None:
+        button = _normalize_mouse_button(button)
         self._run("click", self._mouse_event(button, up=True))
 
     def right_click(self) -> None:
@@ -636,20 +889,27 @@ class PyYDoTool:
             self.mouse_up(button)
 
     def click_with_modifiers(self, *keycodes: int, button: str = MouseButton.LEFT) -> None:
+        button = _normalize_mouse_button(button)
         with self.hold_keys(*keycodes):
             self.click(button)
 
     def move_to(self, x: int, y: int) -> None:
+        x, y = _normalize_point("x", x, "y", y)
         self._run("mousemove", "--absolute", str(x), str(y))
 
     def move_rel(self, dx: int, dy: int) -> None:
+        dx, dy = _normalize_point("dx", dx, "dy", dy)
         self._run("mousemove", str(dx), str(dy))
 
     def drag_to(self, x: int, y: int, button: str = MouseButton.LEFT) -> None:
+        x, y = _normalize_point("x", x, "y", y)
+        button = _normalize_mouse_button(button)
         with self.hold_button(button):
             self.move_to(x, y)
 
     def drag_rel(self, dx: int, dy: int, button: str = MouseButton.LEFT) -> None:
+        dx, dy = _normalize_point("dx", dx, "dy", dy)
+        button = _normalize_mouse_button(button)
         with self.hold_button(button):
             self.move_rel(dx, dy)
 
@@ -662,12 +922,21 @@ class PyYDoTool:
         repeat: int | None = None,
         next_delay_ms: int | None = None,
     ) -> None:
+        x, y = _normalize_point("x", x, "y", y)
+        button, repeat, next_delay_ms = _normalize_click_arguments(
+            button,
+            repeat=repeat,
+            next_delay_ms=next_delay_ms,
+        )
         self.move_to(x, y)
         self.click(button, repeat=repeat, next_delay_ms=next_delay_ms)
 
     def double_click_at(
         self, x: int, y: int, button: str = MouseButton.LEFT, interval: float = 0.1
     ) -> None:
+        x, y = _normalize_point("x", x, "y", y)
+        button = _normalize_mouse_button(button)
+        interval = _require_non_negative("interval", interval)
         self.move_to(x, y)
         self.double_click(button, interval=interval)
 
@@ -685,16 +954,18 @@ class PyYDoTool:
         end_y: int,
         button: str = MouseButton.LEFT,
     ) -> None:
+        start_x, start_y = _normalize_point("start_x", start_x, "start_y", start_y)
+        end_x, end_y = _normalize_point("end_x", end_x, "end_y", end_y)
+        button = _normalize_mouse_button(button)
         self.move_to(start_x, start_y)
         self.drag_to(end_x, end_y, button)
 
     def copy(self, text: str) -> None:
-        backend = self._get_clipboard_backend()
-        self._run_command(list(backend.copy_command), input_text=text)
+        text = _require_text("text", text)
+        self._run_clipboard_command("copy", input_text=text)
 
     def get_clipboard(self) -> str:
-        backend = self._get_clipboard_backend()
-        result = self._run_command(list(backend.paste_command))
+        result = self._run_clipboard_command("paste")
         return result.stdout
 
     def paste(self) -> None:
@@ -703,6 +974,7 @@ class PyYDoTool:
         self.hotkey(Key.CTRL, Key.V)
 
     def paste_text(self, text: str) -> None:
+        text = _require_text("text", text)
         self.copy(text)
         self.paste()
 
@@ -714,6 +986,7 @@ class PyYDoTool:
     def copy_selected(self, wait: float = 0.05) -> str:
         from .keys import Key
 
+        wait = _require_non_negative("wait", wait)
         self.hotkey(Key.CTRL, Key.C)
         if wait > 0:
             time.sleep(wait)
@@ -722,6 +995,7 @@ class PyYDoTool:
     def cut_selected(self, wait: float = 0.05) -> str:
         from .keys import Key
 
+        wait = _require_non_negative("wait", wait)
         self.hotkey(Key.CTRL, Key.X)
         if wait > 0:
             time.sleep(wait)
