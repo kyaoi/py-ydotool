@@ -17,6 +17,7 @@ from py_ydotool import (
     MouseButton,
     PyYDoTool,
 )
+from py_ydotool.client import _build_linear_motion_steps, _run_motion_steps
 from py_ydotool.clipboard import ClipboardBackend
 
 
@@ -602,8 +603,15 @@ def test_drag_to_calls_down_move_up(monkeypatch) -> None:
     def fake_mouse_down(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
         calls.append(("mouse_down", button))
 
-    def fake_move_to(self: PyYDoTool, x: int, y: int) -> None:
-        calls.append(("move_to", (x, y)))
+    def fake_move_to(
+        self: PyYDoTool,
+        x: int,
+        y: int,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        calls.append(("move_to", (x, y, duration, steps)))
 
     def fake_mouse_up(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
         calls.append(("mouse_up", button))
@@ -617,7 +625,7 @@ def test_drag_to_calls_down_move_up(monkeypatch) -> None:
 
     assert calls == [
         ("mouse_down", MouseButton.LEFT),
-        ("move_to", (100, 200)),
+        ("move_to", (100, 200, 0.0, None)),
         ("mouse_up", MouseButton.LEFT),
     ]
 
@@ -628,8 +636,15 @@ def test_drag_rel_calls_down_move_up(monkeypatch) -> None:
     def fake_mouse_down(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
         calls.append(("mouse_down", button))
 
-    def fake_move_rel(self: PyYDoTool, dx: int, dy: int) -> None:
-        calls.append(("move_rel", (dx, dy)))
+    def fake_move_rel(
+        self: PyYDoTool,
+        dx: int,
+        dy: int,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        calls.append(("move_rel", (dx, dy, duration, steps)))
 
     def fake_mouse_up(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
         calls.append(("mouse_up", button))
@@ -643,7 +658,7 @@ def test_drag_rel_calls_down_move_up(monkeypatch) -> None:
 
     assert calls == [
         ("mouse_down", MouseButton.RIGHT),
-        ("move_rel", (-5, 8)),
+        ("move_rel", (-5, 8, 0.0, None)),
         ("mouse_up", MouseButton.RIGHT),
     ]
 
@@ -654,8 +669,15 @@ def test_drag_to_releases_button_when_move_fails(monkeypatch) -> None:
     def fake_mouse_down(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
         calls.append(("mouse_down", button))
 
-    def fake_move_to(self: PyYDoTool, x: int, y: int) -> None:
-        calls.append(("move_to", (x, y)))
+    def fake_move_to(
+        self: PyYDoTool,
+        x: int,
+        y: int,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        calls.append(("move_to", (x, y, duration, steps)))
         raise RuntimeError("move failed")
 
     def fake_mouse_up(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
@@ -668,11 +690,11 @@ def test_drag_to_releases_button_when_move_fails(monkeypatch) -> None:
     tool = PyYDoTool(check_commands_on_init=False)
 
     with pytest.raises(RuntimeError, match="move failed"):
-        tool.drag_to(100, 200)
+        tool.drag_to(100, 200, duration=0.5, steps=4)
 
     assert calls == [
         ("mouse_down", MouseButton.LEFT),
-        ("move_to", (100, 200)),
+        ("move_to", (100, 200, 0.5, 4)),
         ("mouse_up", MouseButton.LEFT),
     ]
 
@@ -693,6 +715,108 @@ def test_move_helpers(monkeypatch) -> None:
     assert calls == [
         ("mousemove", "--absolute", "100", "200"),
         ("mousemove", "-5", "8"),
+    ]
+
+
+def test_move_rel_with_duration_uses_interpolated_relative_steps(monkeypatch) -> None:
+    commands: list[tuple[str, ...]] = []
+    captured_steps: list[tuple[float, int, int]] = []
+
+    def fake_run(self: PyYDoTool, *args: str) -> CompletedProcess[str]:
+        commands.append(args)
+        return CompletedProcess(["ydotool", *args], 0, "", "")
+
+    def fake_run_motion_steps(motion_steps, *, move, monotonic=None, sleep=None) -> None:
+        steps_tuple = tuple(motion_steps)
+        captured_steps.extend((step.offset, step.dx, step.dy) for step in steps_tuple)
+        for step in steps_tuple:
+            move(step.dx, step.dy)
+
+    monkeypatch.setattr(PyYDoTool, "_run", fake_run)
+    monkeypatch.setattr("py_ydotool.client._run_motion_steps", fake_run_motion_steps)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.move_rel(5, -3, duration=0.5, steps=4)
+
+    assert captured_steps == [
+        (0.125, 1, -1),
+        (0.25, 1, -1),
+        (0.375, 2, 0),
+        (0.5, 1, -1),
+    ]
+    assert commands == [
+        ("mousemove", "1", "-1"),
+        ("mousemove", "1", "-1"),
+        ("mousemove", "2", "0"),
+        ("mousemove", "1", "-1"),
+    ]
+
+
+def test_move_to_with_duration_resets_to_current_display_origin(monkeypatch) -> None:
+    commands: list[tuple[str, ...]] = []
+    captured_steps: list[tuple[float, int, int]] = []
+
+    def fake_run(self: PyYDoTool, *args: str) -> CompletedProcess[str]:
+        commands.append(args)
+        return CompletedProcess(["ydotool", *args], 0, "", "")
+
+    def fake_run_motion_steps(motion_steps, *, move, monotonic=None, sleep=None) -> None:
+        steps_tuple = tuple(motion_steps)
+        captured_steps.extend((step.offset, step.dx, step.dy) for step in steps_tuple)
+        for step in steps_tuple:
+            move(step.dx, step.dy)
+
+    monkeypatch.setattr(PyYDoTool, "_run", fake_run)
+    monkeypatch.setattr("py_ydotool.client._run_motion_steps", fake_run_motion_steps)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.move_to(5, -3, duration=0.5, steps=4)
+
+    assert captured_steps == [
+        (0.125, 1, -1),
+        (0.25, 1, -1),
+        (0.375, 2, 0),
+        (0.5, 1, -1),
+    ]
+    assert commands == [
+        ("mousemove", "--absolute", "0", "0"),
+        ("mousemove", "1", "-1"),
+        ("mousemove", "1", "-1"),
+        ("mousemove", "2", "0"),
+        ("mousemove", "1", "-1"),
+    ]
+
+
+def test_drag_rel_with_duration_uses_interpolated_relative_steps(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_mouse_down(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("mouse_down", button))
+
+    def fake_move_rel(
+        self: PyYDoTool,
+        dx: int,
+        dy: int,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        calls.append(("move_rel", (dx, dy, duration, steps)))
+
+    def fake_mouse_up(self: PyYDoTool, button: str = MouseButton.LEFT) -> None:
+        calls.append(("mouse_up", button))
+
+    monkeypatch.setattr(PyYDoTool, "mouse_down", fake_mouse_down)
+    monkeypatch.setattr(PyYDoTool, "move_rel", fake_move_rel)
+    monkeypatch.setattr(PyYDoTool, "mouse_up", fake_mouse_up)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.drag_rel(5, -3, MouseButton.MIDDLE, duration=0.5, steps=4)
+
+    assert calls == [
+        ("mouse_down", MouseButton.MIDDLE),
+        ("move_rel", (5, -3, 0.5, 4)),
+        ("mouse_up", MouseButton.MIDDLE),
     ]
 
 
@@ -736,6 +860,36 @@ def test_click_at_moves_then_clicks(monkeypatch) -> None:
         ("move_to", (10, 20)),
         ("click", (MouseButton.RIGHT, 2, 30)),
     ]
+
+
+def test_double_click_at_rejects_invalid_interval_before_move(monkeypatch) -> None:
+    tool = PyYDoTool(check_commands_on_init=False)
+    move_calls: list[tuple[int, int]] = []
+
+    def fake_move_to(self: PyYDoTool, x: int, y: int) -> None:
+        move_calls.append((x, y))
+
+    monkeypatch.setattr(PyYDoTool, "move_to", fake_move_to)
+
+    with pytest.raises(ValueError, match="interval must be >= 0"):
+        tool.double_click_at(10, 20, interval=-0.1)
+
+    assert move_calls == []
+
+
+def test_double_click_at_rejects_invalid_button_before_move(monkeypatch) -> None:
+    tool = PyYDoTool(check_commands_on_init=False)
+    move_calls: list[tuple[int, int]] = []
+
+    def fake_move_to(self: PyYDoTool, x: int, y: int) -> None:
+        move_calls.append((x, y))
+
+    monkeypatch.setattr(PyYDoTool, "move_to", fake_move_to)
+
+    with pytest.raises(ValueError, match="button must be a hexadecimal string"):
+        tool.double_click_at(10, 20, "middle")
+
+    assert move_calls == []
 
 
 def test_double_click_at_moves_then_double_clicks(monkeypatch) -> None:
@@ -825,18 +979,26 @@ def test_drag_between_moves_then_drags(monkeypatch) -> None:
     def fake_move_to(self: PyYDoTool, x: int, y: int) -> None:
         calls.append(("move_to", (x, y)))
 
-    def fake_drag_to(self: PyYDoTool, x: int, y: int, button: str = MouseButton.LEFT) -> None:
-        calls.append(("drag_to", (x, y, button)))
+    def fake_drag_to(
+        self: PyYDoTool,
+        x: int,
+        y: int,
+        button: str = MouseButton.LEFT,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        calls.append(("drag_to", (x, y, button, duration, steps)))
 
     monkeypatch.setattr(PyYDoTool, "move_to", fake_move_to)
     monkeypatch.setattr(PyYDoTool, "drag_to", fake_drag_to)
 
     tool = PyYDoTool(check_commands_on_init=False)
-    tool.drag_between(1, 2, 10, 20, MouseButton.RIGHT)
+    tool.drag_between(1, 2, 10, 20, MouseButton.RIGHT, duration=0.5, steps=4)
 
     assert calls == [
         ("move_to", (1, 2)),
-        ("drag_to", (10, 20, MouseButton.RIGHT)),
+        ("drag_to", (10, 20, MouseButton.RIGHT, 0.5, 4)),
     ]
 
 
@@ -2023,6 +2185,10 @@ def test_click_with_modifiers_rejects_invalid_button_before_key_hold(monkeypatch
         ("click", (), "button must be a str"),
         ("move_to", (10.5, 20), "x must be an int"),
         ("move_rel", (10, True), "dy must be an int"),
+        ("move_to", (10, 2), "duration must be a real number"),
+        ("move_rel", (10, 2), "duration must be a real number"),
+        ("drag_to", (10, 2), "duration must be a real number"),
+        ("drag_rel", (10, 2), "duration must be a real number"),
         ("type", (123,), "text must be a str"),
         ("type_or_paste", (123,), "text must be a str"),
         ("copy", (b"hello",), "text must be a str"),
@@ -2039,6 +2205,11 @@ def test_public_api_rejects_invalid_argument_types(
     with pytest.raises(TypeError, match=message):
         if method_name == "click":
             method(123)
+        elif (
+            method_name in {"move_to", "move_rel", "drag_to", "drag_rel"}
+            and message == "duration must be a real number"
+        ):
+            method(*args, duration="slow")
         else:
             method(*args)
 
@@ -2204,3 +2375,112 @@ def test_run_command_rejects_non_finite_timeout_override_before_subprocess(monke
         tool._run_command(["clipboard-paste"], timeout=math.inf)
 
     assert calls == []
+
+
+def test_move_to_rejects_invalid_duration_and_steps() -> None:
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(ValueError, match="duration must be >= 0"):
+        tool.move_to(10, 0, duration=-0.1)
+
+    with pytest.raises(ValueError, match="steps must be > 0"):
+        tool.move_to(10, 0, duration=0.2, steps=0)
+
+    with pytest.raises(ValueError, match="steps requires duration > 0"):
+        tool.move_to(10, 0, steps=2)
+
+
+def test_move_rel_rejects_invalid_duration_and_steps() -> None:
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(ValueError, match="duration must be >= 0"):
+        tool.move_rel(10, 0, duration=-0.1)
+
+    with pytest.raises(ValueError, match="steps must be > 0"):
+        tool.move_rel(10, 0, duration=0.2, steps=0)
+
+    with pytest.raises(ValueError, match="steps requires duration > 0"):
+        tool.move_rel(10, 0, steps=2)
+
+
+def test_drag_methods_reject_invalid_duration_and_steps() -> None:
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(ValueError, match="duration must be >= 0"):
+        tool.drag_to(10, 0, duration=-0.1)
+
+    with pytest.raises(ValueError, match="steps must be > 0"):
+        tool.drag_rel(10, 0, duration=0.2, steps=0)
+
+    with pytest.raises(ValueError, match="steps requires duration > 0"):
+        tool.drag_between(1, 2, 10, 20, duration=0.0, steps=2)
+
+
+def test_build_linear_motion_steps_returns_single_step_for_zero_duration() -> None:
+    motion_steps = _build_linear_motion_steps(10, -4, duration=0.0)
+
+    assert [(step.offset, step.dx, step.dy) for step in motion_steps] == [(0.0, 10, -4)]
+
+
+def test_build_linear_motion_steps_rejects_invalid_timing() -> None:
+    with pytest.raises(ValueError, match="duration must be >= 0"):
+        _build_linear_motion_steps(10, 0, duration=-0.1)
+
+    with pytest.raises(ValueError, match="steps must be > 0"):
+        _build_linear_motion_steps(10, 0, duration=0.2, steps=0)
+
+    with pytest.raises(ValueError, match="steps requires duration > 0"):
+        _build_linear_motion_steps(10, 0, duration=0.0, steps=2)
+
+
+def test_build_linear_motion_steps_sums_to_requested_delta() -> None:
+    motion_steps = _build_linear_motion_steps(10, -4, duration=0.4, steps=4)
+
+    assert [step.offset for step in motion_steps] == pytest.approx([0.1, 0.2, 0.3, 0.4])
+    assert sum(step.dx for step in motion_steps) == 10
+    assert sum(step.dy for step in motion_steps) == -4
+
+
+def test_build_linear_motion_steps_limits_auto_steps_by_distance() -> None:
+    motion_steps = _build_linear_motion_steps(2, 0, duration=1.0)
+
+    assert [(step.offset, step.dx, step.dy) for step in motion_steps] == [
+        (0.5, 1, 0),
+        (1.0, 1, 0),
+    ]
+
+
+def test_build_linear_motion_steps_skips_zero_deltas() -> None:
+    assert _build_linear_motion_steps(0, 0, duration=0.5, steps=5) == ()
+
+
+def test_run_motion_steps_uses_offsets_as_deadlines() -> None:
+    motion_steps = _build_linear_motion_steps(3, 0, duration=0.3, steps=3)
+    current_time = 0.0
+    sleeps: list[float] = []
+    moves: list[tuple[int, int, float]] = []
+
+    def fake_monotonic() -> float:
+        return current_time
+
+    def fake_sleep(amount: float) -> None:
+        nonlocal current_time
+        sleeps.append(amount)
+        current_time += amount
+
+    def fake_move(dx: int, dy: int) -> None:
+        moves.append((dx, dy, current_time))
+
+    _run_motion_steps(
+        motion_steps,
+        move=fake_move,
+        monotonic=fake_monotonic,
+        sleep=fake_sleep,
+    )
+
+    assert sleeps == pytest.approx([0.1, 0.1, 0.1])
+    assert moves == [
+        (1, 0, pytest.approx(0.1)),
+        (1, 0, pytest.approx(0.2)),
+        (1, 0, pytest.approx(0.3)),
+    ]

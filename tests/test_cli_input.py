@@ -34,11 +34,25 @@ class _FakeTool:
     ) -> None:
         self.calls.append(("click", button, repeat, next_delay_ms))
 
-    def move_to(self, x: int, y: int) -> None:
-        self.calls.append(("move_to", x, y))
+    def move_to(
+        self,
+        x: int,
+        y: int,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        self.calls.append(("move_to", x, y, duration, steps))
 
-    def move_rel(self, dx: int, dy: int) -> None:
-        self.calls.append(("move_rel", dx, dy))
+    def move_rel(
+        self,
+        dx: int,
+        dy: int,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        self.calls.append(("move_rel", dx, dy, duration, steps))
 
     def click_at(
         self,
@@ -68,8 +82,10 @@ class _FakeTool:
         end_y: int,
         *,
         button: str = MouseButton.LEFT,
+        duration: float = 0.0,
+        steps: int | None = None,
     ) -> None:
-        self.calls.append(("drag_between", start_x, start_y, end_x, end_y, button))
+        self.calls.append(("drag_between", start_x, start_y, end_x, end_y, button, duration, steps))
 
     def copy(self, text: str) -> None:
         self.calls.append(("copy", text))
@@ -140,7 +156,7 @@ def test_cli_move_invokes_move_to_by_default(fake_tool_factory) -> None:
 
     assert exit_code == 0
     tool = _last_tool(fake_tool_factory)
-    assert tool.calls[-1] == ("move_to", 400, 220)
+    assert tool.calls[-1] == ("move_to", 400, 220, 0.0, None)
 
 
 def test_cli_move_invokes_move_rel_with_relative_flag(fake_tool_factory) -> None:
@@ -148,7 +164,15 @@ def test_cli_move_invokes_move_rel_with_relative_flag(fake_tool_factory) -> None
 
     assert exit_code == 0
     tool = _last_tool(fake_tool_factory)
-    assert tool.calls[-1] == ("move_rel", 25, -10)
+    assert tool.calls[-1] == ("move_rel", 25, -10, 0.0, None)
+
+
+def test_cli_move_forwards_duration_and_steps_to_move_to(fake_tool_factory) -> None:
+    exit_code = cli.main(["move", "400", "220", "--duration", "0.4", "--steps", "6"])
+
+    assert exit_code == 0
+    tool = _last_tool(fake_tool_factory)
+    assert tool.calls[-1] == ("move_to", 400, 220, 0.4, 6)
 
 
 def test_cli_click_at_invokes_click_at(fake_tool_factory) -> None:
@@ -194,7 +218,24 @@ def test_cli_drag_invokes_drag_between(fake_tool_factory) -> None:
 
     assert exit_code == 0
     tool = _last_tool(fake_tool_factory)
-    assert tool.calls[-1] == ("drag_between", 10, 20, 300, 400, MouseButton.RIGHT)
+    assert tool.calls[-1] == (
+        "drag_between",
+        10,
+        20,
+        300,
+        400,
+        MouseButton.RIGHT,
+        0.0,
+        None,
+    )
+
+
+def test_cli_move_forwards_duration_and_steps_to_move_rel(fake_tool_factory) -> None:
+    exit_code = cli.main(["move", "25", "-10", "--relative", "--duration", "0.3", "--steps", "5"])
+
+    assert exit_code == 0
+    tool = _last_tool(fake_tool_factory)
+    assert tool.calls[-1] == ("move_rel", 25, -10, 0.3, 5)
 
 
 def test_cli_copy_invokes_copy_and_forwards_backend(fake_tool_factory) -> None:
@@ -275,6 +316,69 @@ def test_cli_drag_rejects_unknown_button() -> None:
         cli.main(["drag", "1", "2", "3", "4", "--button", "banana"])
 
     assert excinfo.value.code == 2
+
+
+def test_cli_drag_forwards_duration_and_steps(fake_tool_factory) -> None:
+    exit_code = cli.main(
+        [
+            "drag",
+            "10",
+            "20",
+            "300",
+            "400",
+            "--button",
+            "right",
+            "--duration",
+            "0.5",
+            "--steps",
+            "12",
+        ]
+    )
+
+    assert exit_code == 0
+    tool = _last_tool(fake_tool_factory)
+    assert tool.calls[-1] == (
+        "drag_between",
+        10,
+        20,
+        300,
+        400,
+        MouseButton.RIGHT,
+        0.5,
+        12,
+    )
+
+
+def test_cli_move_rejects_negative_duration(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["move", "400", "220", "--duration", "-0.1"])
+
+    assert excinfo.value.code == 2
+    assert "duration must be >= 0" in capsys.readouterr().err
+
+
+def test_cli_drag_rejects_non_positive_steps(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["drag", "10", "20", "300", "400", "--steps", "0"])
+
+    assert excinfo.value.code == 2
+    assert "steps must be > 0" in capsys.readouterr().err
+
+
+def test_cli_move_rejects_steps_without_duration(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["move", "400", "220", "--steps", "6"])
+
+    assert excinfo.value.code == 2
+    assert "--steps requires --duration > 0" in capsys.readouterr().err
+
+
+def test_cli_drag_rejects_steps_without_duration(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["drag", "10", "20", "300", "400", "--steps", "12"])
+
+    assert excinfo.value.code == 2
+    assert "--steps requires --duration > 0" in capsys.readouterr().err
 
 
 def test_cli_copy_rejects_socket_path_option() -> None:

@@ -63,7 +63,9 @@ _CLICK_EPILOG = """Examples:
 
 _MOVE_EPILOG = """Examples:
   py-ydotool move 400 220
+  py-ydotool move 400 220 --duration 0.4
   py-ydotool move 25 -10 --relative
+  py-ydotool move 25 -10 --relative --duration 0.3 --steps 6
 """
 
 _CLICK_AT_EPILOG = """Examples:
@@ -89,6 +91,7 @@ _MOUSE_UP_EPILOG = """Examples:
 _DRAG_EPILOG = """Examples:
   py-ydotool drag 100 100 400 200
   py-ydotool drag 100 100 400 200 --button right
+  py-ydotool drag 100 100 400 200 --duration 0.5 --steps 12
 """
 
 _COPY_EPILOG = """Examples:
@@ -152,6 +155,19 @@ def _real_number_cli_value(name: str) -> Callable[[str], float]:
             return float(value)
         except ValueError as exc:
             raise argparse.ArgumentTypeError(f"{name} must be a real number") from exc
+
+    return _parser
+
+
+def _non_negative_real_number_cli_value(name: str) -> Callable[[str], float]:
+    def _parser(value: str) -> float:
+        try:
+            parsed = float(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"{name} must be a real number") from exc
+        if parsed < 0:
+            raise argparse.ArgumentTypeError(f"{name} must be >= 0")
+        return parsed
 
     return _parser
 
@@ -273,6 +289,31 @@ def _add_daemon_options(parser: argparse.ArgumentParser) -> None:
             "Quiet period to keep after the last input before stopping an "
             "owned daemon (default: %(default)s)"
         ),
+    )
+
+
+def _validate_motion_timing_args(
+    parser: argparse.ArgumentParser,
+    *,
+    duration: float,
+    steps: int | None,
+) -> None:
+    if steps is not None and duration == 0:
+        parser.error("--steps requires --duration > 0")
+
+
+def _add_motion_timing_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--duration",
+        default=0.0,
+        type=_non_negative_real_number_cli_value("duration"),
+        help="How long the move should take in seconds (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--steps",
+        default=None,
+        type=_positive_int_cli_value("steps"),
+        help="Override the number of interpolated motion steps",
     )
 
 
@@ -467,8 +508,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "move",
         help="Move the mouse pointer",
         description=(
-            "Move the mouse pointer through ydotool, optionally auto-starting "
-            "ydotoold for this one-shot command."
+            "Move the mouse pointer through ydotool. By default, X and Y are "
+            "current-display local absolute coordinates; use --relative to treat "
+            "them as deltas from the current pointer position."
         ),
         epilog=_MOVE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -478,8 +520,11 @@ def _build_parser() -> argparse.ArgumentParser:
     move.add_argument(
         "--relative",
         action="store_true",
-        help="Treat X and Y as relative deltas instead of an absolute position",
+        help=(
+            "Treat X and Y as relative deltas instead of current-display local absolute coordinates"
+        ),
     )
+    _add_motion_timing_options(move)
     _add_runtime_options(move)
 
     click_at = subparsers.add_parser(
@@ -577,7 +622,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Drag the pointer between two absolute points",
         description=(
             "Move to a start point, hold a mouse button, then drag to an end point through "
-            "ydotool, optionally auto-starting ydotoold for this one-shot command."
+            "ydotool. Start and end coordinates use the same current-display local "
+            "absolute contract as move_to()."
         ),
         epilog=_DRAG_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -591,6 +637,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="left",
         help=("Mouse button name (left/right/middle/side/extra/forward/back/task) or hex code"),
     )
+    _add_motion_timing_options(drag)
     _add_runtime_options(drag)
 
     copy = subparsers.add_parser(
@@ -879,12 +926,14 @@ def _run_click(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     return _run_with_optional_daemon(args, _action)
 
 
-def _run_move(args: argparse.Namespace) -> int:
+def _run_move(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    _validate_motion_timing_args(parser, duration=args.duration, steps=args.steps)
+
     def _action(tool: PyYDoTool) -> None:
         if args.relative:
-            tool.move_rel(args.x, args.y)
+            tool.move_rel(args.x, args.y, duration=args.duration, steps=args.steps)
             return
-        tool.move_to(args.x, args.y)
+        tool.move_to(args.x, args.y, duration=args.duration, steps=args.steps)
 
     return _run_with_optional_daemon(args, _action)
 
@@ -938,13 +987,23 @@ def _run_mouse_up(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
 
 
 def _run_drag(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    _validate_motion_timing_args(parser, duration=args.duration, steps=args.steps)
+
     try:
         button = _parse_button_token(args.button)
     except ValueError as exc:
         parser.error(str(exc))
 
     def _action(tool: PyYDoTool) -> None:
-        tool.drag_between(args.start_x, args.start_y, args.end_x, args.end_y, button=button)
+        tool.drag_between(
+            args.start_x,
+            args.start_y,
+            args.end_x,
+            args.end_y,
+            button=button,
+            duration=args.duration,
+            steps=args.steps,
+        )
 
     return _run_with_optional_daemon(args, _action)
 
@@ -988,7 +1047,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "click":
         return _run_click(args, parser)
     if args.command == "move":
-        return _run_move(args)
+        return _run_move(args, parser)
     if args.command == "click-at":
         return _run_click_at(args, parser)
     if args.command == "double-click":

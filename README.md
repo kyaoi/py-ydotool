@@ -153,9 +153,11 @@ py-ydotool press ENTER
 py-ydotool press CTRL V --hotkey
 py-ydotool click --button right
 py-ydotool move 400 220
+py-ydotool move 400 220 --duration 0.4
 py-ydotool click-at 400 220 --button right
 py-ydotool double-click --button left
 py-ydotool drag 100 100 400 220
+py-ydotool drag 100 100 400 220 --duration 0.5 --steps 12
 py-ydotool copy "hello" --backend wl-clipboard
 py-ydotool get-clipboard
 py-ydotool paste
@@ -173,9 +175,11 @@ Useful options:
 - `--no-daemon`: require an already-running daemon instead of auto-starting one
 - `--socket-path`: target a custom `ydotoold` socket for commands that talk to `ydotool`
 - `--command-timeout`: cap each input command or clipboard subprocess
+- `--duration`, `--steps` on `move` / `drag`: use linear interpolation instead of a single immediate pointer jump
 - `--ready-timeout`, `--stop-timeout`, `--settle-delay`: tune daemon lifecycle timing for unusual environments
 - `py-ydotool press ... --hotkey`: hold all keys together and release them in reverse order
-- `py-ydotool move X Y --relative`: treat `X` and `Y` as deltas instead of an absolute point
+- `py-ydotool move X Y`: treat `X` and `Y` as current-display local absolute coordinates by default
+- `py-ydotool move X Y --relative`: treat `X` and `Y` as deltas instead of current-display local absolute coordinates
 - `py-ydotool click --button <name>` and related mouse commands: use `left`, `right`, `middle`, `side`, `extra`, `forward`, `back`, or `task`
 - `py-ydotool copy/get-clipboard/paste-text --backend <name>`: force a specific clipboard backend such as `wl-clipboard`, `xclip`, or `xsel`
 
@@ -225,6 +229,10 @@ py-ydotool press CTRL L --hotkey
 py-ydotool move 25 0 --relative
 py-ydotool move 0 25 --relative
 
+# Move more slowly with linear interpolation.
+py-ydotool move 400 220 --duration 0.4
+py-ydotool move 25 -10 --relative --duration 0.3 --steps 6
+
 # Open a context menu at a specific point.
 py-ydotool click-at 640 360 --button right
 
@@ -233,6 +241,7 @@ py-ydotool double-click
 
 # Drag from one absolute point to another.
 py-ydotool drag 100 100 400 220
+py-ydotool drag 100 100 400 220 --duration 0.5 --steps 12
 
 # Copy text into the clipboard without touching ydotoold.
 py-ydotool copy "hello from py-ydotool" --backend wl-clipboard
@@ -248,6 +257,27 @@ py-ydotool paste-text "hello from py-ydotool" --backend wl-clipboard
 `paste` and `paste-text` currently send the usual `Ctrl+V` paste hotkey. If your
 target app expects a different shortcut, split the operation into `copy` plus
 an explicit key sequence such as `py-ydotool press SHIFT INSERT --hotkey`.
+
+
+## Mouse coordinate model and current limitations
+
+`py-ydotool` currently exposes two mouse coordinate styles, and the next planned movement work keeps that split explicit.
+
+- `move_rel(dx, dy)` and `py-ydotool move X Y --relative` are **relative** helpers. They treat the values as deltas from the current pointer position.
+- `move_to(x, y)`, `click_at(x, y)`, `double_click_at(x, y)`, `drag_to(x, y)`, and the absolute CLI forms of `move` / `drag` are documented as **current-display local absolute** helpers.
+- `click_at()` and `double_click_at()` are thin wrappers over `move_to()`, so they inherit the same coordinate contract instead of introducing a separate absolute-click coordinate system.
+
+For the absolute helpers, `(0, 0)` means the origin of the **current display**, not a guaranteed global origin for the whole virtual desktop. On Wayland with `ydotool`, multi-display global absolute positioning is environment-dependent, so this project does **not** promise one consistent coordinate space across every monitor.
+
+Practical guidance:
+
+- prefer relative moves when you need the safest behavior across compositor setups
+- keep absolute-style moves inside the current display unless you have verified your environment manually
+- do not assume `move_to()`, `click_at()`, or `double_click_at()` can target the full multi-display desktop reliably
+
+`position()` is intentionally unsupported right now. `ydotool` is good at injecting pointer movement and clicks, but by itself it does not provide a reliable, portable way for this library to query the real current pointer position under Wayland-oriented environments.
+
+This contract also applies to timed absolute-like moves such as `move_to(x, y, duration=...)` and `drag_to(x, y, duration=...)`: they stay current-display local. For `duration > 0`, the implementation may first move to the current display origin `(0, 0)` and then use relative interpolation to reach `(x, y)`, so it does **not** promise a straight-line move from the original pointer position.
 
 ## Setup and doctor
 
@@ -678,6 +708,7 @@ gui.click()
 gui.right_click()
 gui.double_click_at(400, 220)
 gui.drag_between(500, 300, 700, 300)
+gui.drag_rel(120, 0, duration=0.4)
 gui.click_many(3, button=MouseButton.LEFT, next_delay_ms=100)
 ```
 
@@ -797,11 +828,12 @@ Top-level exports are:
 
 These are intentionally not implemented right now:
 
-- `position()`
+- `position()` or other real cursor-position queries
+- global multi-display absolute positioning guarantees
 - scroll helpers
 - image recognition / screen search
 
-The library stays focused on explicit keyboard, mouse, and clipboard automation built on top of `ydotool`.
+The library stays focused on explicit keyboard, mouse, and clipboard automation built on top of `ydotool`. Absolute-style mouse helpers are documented as current-display local helpers unless future backend work makes a stronger guarantee possible.
 
 ## Status
 

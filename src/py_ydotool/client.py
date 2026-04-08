@@ -8,7 +8,7 @@ import stat
 import subprocess
 import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import ContextDecorator, contextmanager
 from dataclasses import dataclass, field
 from types import TracebackType
@@ -68,6 +68,13 @@ def _socket_help() -> str:
 
 
 ProcessOutputValue = str | bytes | None
+
+
+@dataclass(frozen=True, slots=True)
+class _MotionStep:
+    offset: float
+    dx: int
+    dy: int
 
 
 def _output_to_text(value: ProcessOutputValue) -> str:
@@ -216,6 +223,93 @@ def _normalize_click_arguments(
         _normalize_repeat("repeat", repeat),
         _normalize_delay_ms("next_delay_ms", next_delay_ms),
     )
+
+
+def _normalize_motion_timing(
+    *, duration: float = 0.0, steps: int | None = None
+) -> tuple[float, int | None]:
+    duration = _require_non_negative("duration", duration)
+    if steps is None:
+        return duration, None
+    steps = _require_positive_int("steps", steps)
+    if duration == 0:
+        raise ValueError("steps requires duration > 0")
+    return duration, steps
+
+
+def _suggest_motion_steps(dx: int, dy: int, *, duration: float) -> int:
+    if duration == 0:
+        return 1
+
+    max_axis = max(abs(dx), abs(dy))
+    if max_axis == 0:
+        return 1
+
+    return max(1, min(max_axis, math.ceil(duration * 120)))
+
+
+def _build_linear_motion_steps(
+    dx: int,
+    dy: int,
+    *,
+    duration: float = 0.0,
+    steps: int | None = None,
+) -> tuple[_MotionStep, ...]:
+    dx, dy = _normalize_point("dx", dx, "dy", dy)
+    duration, steps = _normalize_motion_timing(duration=duration, steps=steps)
+
+    if duration == 0:
+        if dx == 0 and dy == 0:
+            return ()
+        return (_MotionStep(offset=0.0, dx=dx, dy=dy),)
+
+    step_count = steps if steps is not None else _suggest_motion_steps(dx, dy, duration=duration)
+
+    motion_steps: list[_MotionStep] = []
+    previous_x = 0
+    previous_y = 0
+    for index in range(1, step_count + 1):
+        current_x = round(dx * index / step_count)
+        current_y = round(dy * index / step_count)
+        step_dx = current_x - previous_x
+        step_dy = current_y - previous_y
+        previous_x = current_x
+        previous_y = current_y
+        if step_dx == 0 and step_dy == 0:
+            continue
+        motion_steps.append(
+            _MotionStep(
+                offset=duration * index / step_count,
+                dx=step_dx,
+                dy=step_dy,
+            )
+        )
+
+    return tuple(motion_steps)
+
+
+def _run_motion_steps(
+    motion_steps: Iterable[_MotionStep],
+    *,
+    move: Callable[[int, int], None],
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    steps_tuple = tuple(motion_steps)
+    if not steps_tuple:
+        return
+
+    if len(steps_tuple) == 1 and steps_tuple[0].offset == 0:
+        step = steps_tuple[0]
+        move(step.dx, step.dy)
+        return
+
+    started_at = monotonic()
+    for step in steps_tuple:
+        remaining = started_at + step.offset - monotonic()
+        if remaining > 0:
+            sleep(remaining)
+        move(step.dx, step.dy)
 
 
 def _help_for_message(message: str) -> str:
@@ -893,25 +987,91 @@ class PyYDoTool:
         with self.hold_keys(*keycodes):
             self.click(button)
 
-    def move_to(self, x: int, y: int) -> None:
-        x, y = _normalize_point("x", x, "y", y)
+    def _move_to_absolute_once(self, x: int, y: int) -> None:
         self._run("mousemove", "--absolute", str(x), str(y))
 
-    def move_rel(self, dx: int, dy: int) -> None:
-        dx, dy = _normalize_point("dx", dx, "dy", dy)
+    def move_to(
+        self,
+        x: int,
+        y: int,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        """Move to a current-display local absolute point.
+
+        ``x`` and ``y`` are documented as coordinates inside the display that
+        currently contains the pointer, not as guaranteed virtual-desktop global
+        coordinates across every monitor.
+
+        ``duration=0`` keeps the underlying absolute ydotool move.
+        ``duration>0`` keeps the same current-display contract, but it may first
+        move to the current display origin ``(0, 0)`` and then use relative
+        interpolation to reach ``(x, y)``. This is an absolute-like helper, not
+        a guarantee of a straight-line move from the original pointer position.
+        """
+        x, y = _normalize_point("x", x, "y", y)
+        duration, steps = _normalize_motion_timing(duration=duration, steps=steps)
+        if duration == 0:
+            self._move_to_absolute_once(x, y)
+            return
+        self._move_to_absolute_once(0, 0)
+        self.move_rel(x, y, duration=duration, steps=steps)
+
+    def _move_rel_once(self, dx: int, dy: int) -> None:
         self._run("mousemove", str(dx), str(dy))
 
-    def drag_to(self, x: int, y: int, button: str = MouseButton.LEFT) -> None:
+    def move_rel(
+        self,
+        dx: int,
+        dy: int,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        """Move relative to the current pointer position.
+
+        ``duration`` adds linear interpolation over multiple relative motions.
+        ``steps`` can be used to override the automatically suggested split count.
+        """
+        motion_steps = _build_linear_motion_steps(dx, dy, duration=duration, steps=steps)
+        _run_motion_steps(motion_steps, move=self._move_rel_once)
+
+    def drag_to(
+        self,
+        x: int,
+        y: int,
+        button: str = MouseButton.LEFT,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        """Drag to a current-display local absolute point.
+
+        This keeps the same coordinate contract as :meth:`move_to` and uses the
+        same timed absolute-like behavior when ``duration > 0``.
+        """
         x, y = _normalize_point("x", x, "y", y)
         button = _normalize_mouse_button(button)
+        duration, steps = _normalize_motion_timing(duration=duration, steps=steps)
         with self.hold_button(button):
-            self.move_to(x, y)
+            self.move_to(x, y, duration=duration, steps=steps)
 
-    def drag_rel(self, dx: int, dy: int, button: str = MouseButton.LEFT) -> None:
+    def drag_rel(
+        self,
+        dx: int,
+        dy: int,
+        button: str = MouseButton.LEFT,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
+    ) -> None:
+        """Drag relative to the current pointer position."""
         dx, dy = _normalize_point("dx", dx, "dy", dy)
         button = _normalize_mouse_button(button)
+        duration, steps = _normalize_motion_timing(duration=duration, steps=steps)
         with self.hold_button(button):
-            self.move_rel(dx, dy)
+            self.move_rel(dx, dy, duration=duration, steps=steps)
 
     def click_at(
         self,
@@ -922,6 +1082,11 @@ class PyYDoTool:
         repeat: int | None = None,
         next_delay_ms: int | None = None,
     ) -> None:
+        """Move with :meth:`move_to`, then click at that point.
+
+        The coordinate contract is exactly the same current-display local
+        absolute contract documented for :meth:`move_to`.
+        """
         x, y = _normalize_point("x", x, "y", y)
         button, repeat, next_delay_ms = _normalize_click_arguments(
             button,
@@ -934,6 +1099,11 @@ class PyYDoTool:
     def double_click_at(
         self, x: int, y: int, button: str = MouseButton.LEFT, interval: float = 0.1
     ) -> None:
+        """Move with :meth:`move_to`, then double-click at that point.
+
+        The coordinate contract is exactly the same current-display local
+        absolute contract documented for :meth:`move_to`.
+        """
         x, y = _normalize_point("x", x, "y", y)
         button = _normalize_mouse_button(button)
         interval = _require_non_negative("interval", interval)
@@ -953,12 +1123,17 @@ class PyYDoTool:
         end_x: int,
         end_y: int,
         button: str = MouseButton.LEFT,
+        *,
+        duration: float = 0.0,
+        steps: int | None = None,
     ) -> None:
+        """Drag between two current-display local absolute points."""
         start_x, start_y = _normalize_point("start_x", start_x, "start_y", start_y)
         end_x, end_y = _normalize_point("end_x", end_x, "end_y", end_y)
         button = _normalize_mouse_button(button)
+        duration, steps = _normalize_motion_timing(duration=duration, steps=steps)
         self.move_to(start_x, start_y)
-        self.drag_to(end_x, end_y, button)
+        self.drag_to(end_x, end_y, button, duration=duration, steps=steps)
 
     def copy(self, text: str) -> None:
         text = _require_text("text", text)
@@ -1002,4 +1177,13 @@ class PyYDoTool:
         return self.get_clipboard()
 
     def position(self) -> tuple[int, int]:
-        raise NotImplementedError("Current mouse position is not supported yet.")
+        """Return the real current pointer position.
+
+        This is intentionally unsupported for now because ``ydotool`` alone does
+        not provide a reliable portable way for this library to query the actual
+        current pointer position.
+        """
+        raise NotImplementedError(
+            "Current mouse position is not supported by py-ydotool yet; "
+            "see the README for current Wayland/ydotool limitations."
+        )
