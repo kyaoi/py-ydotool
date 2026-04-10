@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import TextIO, TypedDict
 
 from .client import PyYDoTool
+from .clipboard import available_clipboard_backends
+from .text_input import available_text_backends
 
 DEFAULT_SOCKET_PATH = "/tmp/.ydotool_socket"
 DEFAULT_UDEV_GROUP = "input"
@@ -370,6 +372,50 @@ def _collect_modules_load_status(paths: SystemPaths) -> DoctorItem:
     )
 
 
+def _collect_clipboard_backend_status() -> DoctorItem:
+    available = available_clipboard_backends()
+    if available:
+        names = ", ".join(backend.name for backend in available)
+        return DoctorItem(
+            name="clipboard-backends",
+            status="OK",
+            summary=f"Clipboard helpers available: {names}",
+            details=(f"count={len(available)}",),
+        )
+    return DoctorItem(
+        name="clipboard-backends",
+        status="WARN",
+        summary="No supported clipboard backend was found",
+        details=("supported=wl-clipboard, xclip, xsel",),
+        action="Install wl-clipboard, xclip, or xsel to enable clipboard-backed paste.",
+    )
+
+
+def _collect_text_backend_status() -> DoctorItem:
+    clipboard_available = bool(available_clipboard_backends())
+    available = available_text_backends(clipboard_available=clipboard_available)
+    if available:
+        names = ", ".join(backend.name for backend in available)
+        details = [f"clipboard_available={'yes' if clipboard_available else 'no'}"]
+        details.append("timing_per_char=yes for direct typing backends only")
+        return DoctorItem(
+            name="text-backends",
+            status="OK",
+            summary=f"Text input backends available: {names}",
+            details=tuple(details),
+        )
+    return DoctorItem(
+        name="text-backends",
+        status="WARN",
+        summary="No text input backend is currently usable",
+        details=(f"clipboard_available={'yes' if clipboard_available else 'no'}",),
+        action=(
+            "Install ydotool, wtype, or eitype for direct typing, and install a "
+            "clipboard backend if you want the paste fallback available too."
+        ),
+    )
+
+
 def _collect_user_group_status(user: str | None, group: str) -> DoctorItem:
     if not user:
         return DoctorItem(
@@ -432,6 +478,8 @@ def collect_doctor_report(
         _collect_modules_load_status(resolved_paths),
         _collect_user_group_status(resolved_user, group),
         _collect_privilege_helper_status(),
+        _collect_clipboard_backend_status(),
+        _collect_text_backend_status(),
     ]
 
     ydotool_path = shutil.which("ydotool")

@@ -27,8 +27,14 @@ from .exceptions import (
     DaemonReadyTimeoutError,
     DaemonStartError,
     PyYDoToolError,
+    TextInputUnavailableError,
 )
 from .keys import Key
+from .text_input import (
+    TextInputBackend,
+    available_text_backends,
+    detect_text_backend,
+)
 
 __all__ = [
     "ClipboardBackend",
@@ -48,12 +54,16 @@ __all__ = [
     "SetupOptions",
     "SetupPlan",
     "SystemPaths",
+    "TextInputBackend",
+    "TextInputUnavailableError",
     "YDoToolDaemon",
     "__version__",
     "available_clipboard_backends",
+    "available_text_backends",
     "build_setup_plan",
     "collect_doctor_report",
     "detect_clipboard_backend",
+    "detect_text_backend",
     "doctor_report_to_dict",
     "render_doctor_report",
     "render_doctor_report_json",

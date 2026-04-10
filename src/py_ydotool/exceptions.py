@@ -28,3 +28,7 @@ class DaemonStartError(CommandExecutionError, DaemonError):
 
 class DaemonReadyTimeoutError(CommandTimeoutError, DaemonError):
     """Raised when ydotoold does not become ready in time."""
+
+
+class TextInputUnavailableError(PyYDoToolError):
+    """Raised when no supported text input backend is available."""

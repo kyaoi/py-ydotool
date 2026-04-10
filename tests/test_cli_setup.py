@@ -58,6 +58,88 @@ def test_doctor_report_missing_commands_and_uinput(tmp_path, monkeypatch) -> Non
     assert "py-ydotool doctor" in render_doctor_report(report)
 
 
+def test_doctor_report_includes_clipboard_and_text_backend_status(tmp_path, monkeypatch) -> None:
+    dev_uinput = tmp_path / "uinput"
+    dev_uinput.write_text("device", encoding="utf-8")
+    dev_uinput.chmod(0o660)
+
+    paths = SystemPaths(
+        dev_uinput=dev_uinput,
+        udev_rules_dir=tmp_path / "udev-rules.d",
+        modules_load_dir=tmp_path / "modules-load.d",
+    )
+
+    def fake_which(name: str) -> str | None:
+        mapping = {
+            "ydotool": "/usr/bin/ydotool",
+            "ydotoold": "/usr/bin/ydotoold",
+            "wtype": "/usr/bin/wtype",
+            "eitype": "/usr/bin/eitype",
+            "wl-copy": "/usr/bin/wl-copy",
+            "wl-paste": "/usr/bin/wl-paste",
+        }
+        return mapping.get(name)
+
+    monkeypatch.setattr("py_ydotool._system.shutil.which", fake_which)
+    monkeypatch.setattr(
+        "py_ydotool._system._existing_socket_state",
+        lambda _socket_path: (False, None),
+    )
+
+    report = collect_doctor_report(
+        socket_path=str(tmp_path / "ydotool.sock"),
+        paths=paths,
+        user=os.environ.get("USER") or None,
+    )
+
+    clipboard_item = next(item for item in report.items if item.name == "clipboard-backends")
+    text_item = next(item for item in report.items if item.name == "text-backends")
+    assert clipboard_item.status == "OK"
+    assert "wl-clipboard" in clipboard_item.summary
+    assert text_item.status == "OK"
+    assert "ydotool" in text_item.summary
+    assert "wtype" in text_item.summary
+    assert "eitype" in text_item.summary
+    assert "paste" in text_item.summary
+
+
+def test_doctor_report_warns_when_clipboard_and_text_backends_are_unavailable(
+    tmp_path, monkeypatch
+) -> None:
+    dev_uinput = tmp_path / "uinput"
+    dev_uinput.write_text("device", encoding="utf-8")
+    dev_uinput.chmod(0o660)
+
+    paths = SystemPaths(
+        dev_uinput=dev_uinput,
+        udev_rules_dir=tmp_path / "udev-rules.d",
+        modules_load_dir=tmp_path / "modules-load.d",
+    )
+
+    def fake_which(name: str) -> str | None:
+        mapping = {"ydotoold": "/usr/bin/ydotoold"}
+        return mapping.get(name)
+
+    monkeypatch.setattr("py_ydotool._system.shutil.which", fake_which)
+    monkeypatch.setattr(
+        "py_ydotool._system._existing_socket_state",
+        lambda _socket_path: (False, None),
+    )
+
+    report = collect_doctor_report(
+        socket_path=str(tmp_path / "ydotool.sock"),
+        paths=paths,
+        user=os.environ.get("USER") or None,
+    )
+
+    clipboard_item = next(item for item in report.items if item.name == "clipboard-backends")
+    text_item = next(item for item in report.items if item.name == "text-backends")
+    assert clipboard_item.status == "WARN"
+    assert "clipboard-backed paste" in (clipboard_item.action or "")
+    assert text_item.status == "WARN"
+    assert "paste fallback" in (text_item.action or "")
+
+
 def test_doctor_report_warns_when_user_is_configured_but_session_lacks_access(
     tmp_path, monkeypatch
 ) -> None:
@@ -617,6 +699,7 @@ def test_main_help_includes_quick_start_examples(capsys) -> None:
             [
                 "usual Ctrl+V paste hotkey",
                 "This does not modify clipboard contents first",
+                "--paste-shortcut KEY",
             ],
         ),
         (
@@ -625,6 +708,7 @@ def test_main_help_includes_quick_start_examples(capsys) -> None:
                 "selected backend",
                 "usual Ctrl+V paste hotkey",
                 "--backend BACKEND",
+                "--no-restore-clipboard",
             ],
         ),
     ],

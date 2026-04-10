@@ -7,6 +7,7 @@ A small Python wrapper around `ydotool` for Linux desktop automation.
 - explicit keyboard helpers
 - explicit mouse helpers
 - clipboard helpers with backend auto-detection
+- text input fallback that can paste Unicode text when direct typing is not suitable
 - predictable failures instead of hidden retries or magic behavior
 - optional `ydotoold` lifecycle helpers when you want this library to start and stop the daemon for you
 
@@ -36,6 +37,9 @@ For clipboard support, one of the following is required:
 - `wl-copy` / `wl-paste` from `wl-clipboard`
 - `xclip`
 - `xsel`
+
+For high-level text input fallback, clipboard access is also what allows
+`type()` / `write()` to paste Unicode text when direct typing is not suitable.
 
 ## Installation
 
@@ -162,6 +166,7 @@ py-ydotool copy "hello" --backend wl-clipboard
 py-ydotool get-clipboard
 py-ydotool paste
 py-ydotool paste-text "hello"
+py-ydotool type "こんにちは" --text-backend paste --backend wl-clipboard
 ```
 
 By default these commands use the same daemon helper as the Python API, so short one-shot invocations do not need a separate `ydotoold` bootstrap step. That means the CLI will:
@@ -181,7 +186,10 @@ Useful options:
 - `py-ydotool move X Y`: treat `X` and `Y` as current-display local absolute coordinates by default
 - `py-ydotool move X Y --relative`: treat `X` and `Y` as deltas instead of current-display local absolute coordinates
 - `py-ydotool click --button <name>` and related mouse commands: use `left`, `right`, `middle`, `side`, `extra`, `forward`, `back`, or `task`
-- `py-ydotool copy/get-clipboard/paste-text --backend <name>`: force a specific clipboard backend such as `wl-clipboard`, `xclip`, or `xsel`
+- `py-ydotool type --text-backend <name>`: force `auto`, `ydotool`, `wtype`, `eitype`, or `paste` for high-level text input
+- `py-ydotool copy/get-clipboard/paste-text/type --backend <name>`: force a specific clipboard backend such as `wl-clipboard`, `xclip`, or `xsel` when clipboard-backed paste is involved
+- `py-ydotool paste/paste-text/type --paste-shortcut ...`: replace the default `Ctrl+V` hotkey
+- `py-ydotool paste-text/type --no-restore-clipboard`: skip clipboard restore after clipboard-backed paste
 
 Key names for `press` are case-insensitive and accept the same constant names as `Key`, so `ENTER`, `CTRL`, `LEFT_SHIFT`, and numeric keycodes all work.
 
@@ -191,16 +199,63 @@ The clipboard-related CLI commands have slightly different roles:
 
 - `py-ydotool copy TEXT`: write `TEXT` to the system clipboard only
 - `py-ydotool get-clipboard`: print the current clipboard text only
-- `py-ydotool paste`: send the paste hotkey only; it does not change clipboard contents first
-- `py-ydotool paste-text TEXT`: copy `TEXT` with the selected clipboard backend, then send the paste hotkey
+- `py-ydotool paste`: send the configured paste shortcut only; it does not change clipboard contents first
+- `py-ydotool paste-text TEXT`: copy `TEXT` with the selected clipboard backend, then send the configured paste shortcut
 
-`copy` and `get-clipboard` do not talk to `ydotoold`, so they do not need `--socket-path` or daemon lifecycle tuning. When backend auto-detection is not what you want, force one explicitly:
+`copy` and `get-clipboard` do not talk to `ydotoold`, so they do not need `--socket-path` or daemon lifecycle tuning. `type`, `paste`, and `paste-text` can also customize the paste shortcut or force paste fallback from the CLI. When backend auto-detection is not what you want, force one explicitly:
 
 ```bash
 py-ydotool copy "hello" --backend wl-clipboard
 py-ydotool get-clipboard --backend xclip
 py-ydotool paste-text "hello" --backend xsel
+py-ydotool type "こんにちは" --text-backend wtype
+py-ydotool type "こんにちは" --text-backend eitype
+py-ydotool type "こんにちは" --text-backend paste --backend wl-clipboard
+py-ydotool paste --paste-shortcut SHIFT INSERT
 ```
+
+### High-level text input behavior
+
+`type()` / `write()` are high-level text input helpers. They prefer direct
+typing when a suitable backend is available and can fall back to
+clipboard-backed paste when direct Unicode input is unavailable.
+
+Current auto-selection policy:
+
+- ASCII text prefers `ydotool`, then `wtype`, then `eitype`
+- non-ASCII / Unicode text prefers `wtype`, then `eitype`
+- if no suitable direct backend is available, clipboard-backed paste is used
+- if neither direct typing nor clipboard-backed paste is available, `type()` raises an error
+
+Practical backend guidance:
+
+- stay with `auto` unless you are debugging a backend-specific issue
+- prefer `wtype` first on Wayland when you want direct Unicode typing
+- try `eitype` when your desktop/session exposes it more reliably than `wtype`
+- force `paste` when direct typing is not important and you mainly want broad Unicode coverage
+- enable `strict_text_timing` when per-character timing matters more than fallback convenience
+
+Important timing contract:
+
+- `type_delay_ms` only applies to direct typing backends
+- when paste fallback is selected, the text is inserted atomically
+- paste fallback does **not** simulate one-character-at-a-time typing
+- set `strict_text_timing=True` (or `--strict-text-timing`) if timing should fail instead of silently falling back to paste
+
+Important clipboard contract:
+
+- `paste_text()` captures and restores the current **text** clipboard by default
+- the restore happens after a short `paste_settle_delay` window
+- set `restore_clipboard=False` if you prefer speed over clipboard preservation
+- set `paste_shortcut=(...)` if your target environment needs something other than `Ctrl+V`
+
+Because paste fallback is still a paste operation, some targets can behave
+differently from direct typing. Terminals, Vim, password fields, and unusual UI
+widgets may need a different approach.
+
+On Wayland, `wtype` and `eitype` are the preferred direct Unicode backends when
+available. `ydotool` remains the default direct backend for simple ASCII typing
+and for the broader key / mouse automation API.
 
 ### Shell-side press-and-hold sequences
 
@@ -254,9 +309,29 @@ printf '%s\n' "$current_clipboard"
 py-ydotool paste-text "hello from py-ydotool" --backend wl-clipboard
 ```
 
-`paste` and `paste-text` currently send the usual `Ctrl+V` paste hotkey. If your
-target app expects a different shortcut, split the operation into `copy` plus
-an explicit key sequence such as `py-ydotool press SHIFT INSERT --hotkey`.
+`paste`, `paste-text`, and clipboard-backed `type` use the usual `Ctrl+V` paste
+shortcut by default. Override it with `--paste-shortcut ...` on the CLI or
+`paste_shortcut=(...)` in Python when your target app expects something else.
+
+More text-oriented examples:
+
+```bash
+# Let auto-selection choose the best available backend.
+py-ydotool type "こんにちは"
+
+# Force a direct Unicode backend while debugging session-specific behavior.
+py-ydotool type "こんにちは" --text-backend wtype
+py-ydotool type "こんにちは" --text-backend eitype
+
+# Force clipboard-backed paste and preserve the old clipboard contents.
+py-ydotool type "こんにちは" --text-backend paste --backend wl-clipboard
+
+# Fail instead of silently using atomic paste fallback when timing matters.
+py-ydotool type "こんにちは" --delay 25 --strict-text-timing
+
+# Use a terminal-friendly paste shortcut.
+py-ydotool paste-text "hello" --paste-shortcut SHIFT INSERT
+```
 
 
 ## Mouse coordinate model and current limitations
@@ -284,6 +359,7 @@ This contract also applies to timed absolute-like moves such as `move_to(x, y, d
 `py-ydotool` separates **one-time system setup** from **normal Python usage**:
 
 - `py-ydotool doctor` inspects the current environment and explains what is missing
+- `py-ydotool doctor` also reports whether clipboard helpers and high-level text backends look available
 - it checks the runtime prerequisites (`ydotool`, `ydotoold`, `/dev/uinput`, socket path)
 - it also checks whether the managed udev rule, modules-load entry, and target user group membership look correct
 - `py-ydotool doctor --json` emits the same diagnosis in a machine-readable form for scripts or CI
@@ -649,6 +725,16 @@ from py_ydotool import PyYDoTool
 gui = PyYDoTool()
 gui.type_or_paste("short ascii text")
 gui.paste_text("longer text that is safer to paste")
+gui.type("こんにちは")
+
+direct_gui = PyYDoTool(text_backend="wtype")
+direct_gui.type("こんにちは")
+
+paste_gui = PyYDoTool(text_backend="paste", clipboard_backend="wl-clipboard")
+paste_gui.type("こんにちは")
+
+strict_gui = PyYDoTool(type_delay_ms=15, strict_text_timing=True)
+strict_gui.type("こんにちは")  # raises instead of using atomic paste fallback
 ```
 
 By default, clipboard backends are detected in this order:
@@ -673,6 +759,14 @@ from py_ydotool import available_clipboard_backends
 print([backend.name for backend in available_clipboard_backends()])
 ```
 
+If you want to inspect direct text backends too:
+
+```python
+from py_ydotool import available_text_backends
+
+print([backend.name for backend in available_text_backends()])
+```
+
 #### Troubleshooting clipboard backends
 
 `py-ydotool doctor` focuses on `ydotool` / `ydotoold` / `/dev/uinput`. Clipboard issues are usually a separate boundary, so prefer checking the clipboard backend directly when copy/paste fails.
@@ -682,6 +776,22 @@ print([backend.name for backend in available_clipboard_backends()])
 - under native Wayland sessions, prefer `wl-clipboard` when possible
 - `xclip` and `xsel` still depend on an X11 / XWayland clipboard being available to the process
 - backend detection only checks command availability; it does not bypass display/session permissions
+
+#### Troubleshooting text backends
+
+When high-level text input behaves differently from what you expected, narrow the problem down in this order:
+
+1. run `py-ydotool doctor` and confirm that the reported text backends match what is installed
+2. force the backend once with `--text-backend ...` or `text_backend=...` to see whether the issue is selection or execution
+3. if timing matters, enable `strict_text_timing` so a hidden paste fallback becomes an explicit error
+4. if direct Unicode typing is unavailable in the current session, use `paste` plus an explicit clipboard backend as the stable fallback
+
+Useful rules of thumb:
+
+- if ASCII works but Unicode does not, you are usually on the `ydotool` path and need `wtype`, `eitype`, or paste fallback
+- if `wtype` or `eitype` is installed but unavailable, the missing piece is usually the current session/compositor integration rather than Python itself
+- if `paste` works but direct typing does not, keep using `type(..., text_backend="paste")` for that target app instead of forcing a fragile direct path
+- if a target app only accepts `Shift+Insert` or another shortcut, change `paste_shortcut` instead of changing the clipboard backend first
 
 ### Hold keys and mouse buttons
 

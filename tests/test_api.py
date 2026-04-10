@@ -16,6 +16,7 @@ from py_ydotool import (
     Key,
     MouseButton,
     PyYDoTool,
+    TextInputUnavailableError,
 )
 from py_ydotool.client import _build_linear_motion_steps, _run_motion_steps
 from py_ydotool.clipboard import ClipboardBackend
@@ -63,6 +64,31 @@ def test_init_rejects_non_finite_command_timeout(value: float) -> None:
 def test_init_rejects_empty_clipboard_backend() -> None:
     with pytest.raises(ValueError, match="clipboard_backend must not be empty"):
         PyYDoTool(check_commands_on_init=False, clipboard_backend="")
+
+
+def test_init_rejects_empty_text_backend() -> None:
+    with pytest.raises(ValueError, match="text_backend must not be empty"):
+        PyYDoTool(check_commands_on_init=False, text_backend="")
+
+
+def test_init_rejects_non_bool_restore_clipboard() -> None:
+    with pytest.raises(TypeError, match="restore_clipboard must be a bool"):
+        PyYDoTool(check_commands_on_init=False, restore_clipboard="yes")
+
+
+def test_init_rejects_non_bool_strict_text_timing() -> None:
+    with pytest.raises(TypeError, match="strict_text_timing must be a bool"):
+        PyYDoTool(check_commands_on_init=False, strict_text_timing="yes")
+
+
+def test_init_rejects_negative_paste_settle_delay() -> None:
+    with pytest.raises(ValueError, match="paste_settle_delay must be >= 0"):
+        PyYDoTool(check_commands_on_init=False, paste_settle_delay=-0.01)
+
+
+def test_init_rejects_empty_paste_shortcut() -> None:
+    with pytest.raises(ValueError, match="paste_shortcut must not be empty"):
+        PyYDoTool(check_commands_on_init=False, paste_shortcut=())
 
 
 def test_doctor_report_rejects_empty_group() -> None:
@@ -153,9 +179,15 @@ def test_run_uses_configured_timeout(monkeypatch) -> None:
 
 def test_run_clipboard_command_uses_backend_command_for(monkeypatch) -> None:
     seen_commands: list[list[str]] = []
+    seen_capture_output: list[bool | None] = []
+    seen_stdout: list[object | None] = []
+    seen_stderr: list[object | None] = []
 
     def fake_run(*args, **kwargs):
         seen_commands.append(args[0])
+        seen_capture_output.append(kwargs.get("capture_output"))
+        seen_stdout.append(kwargs.get("stdout"))
+        seen_stderr.append(kwargs.get("stderr"))
         return CompletedProcess(args[0], 0, "", "")
 
     backend = ClipboardBackend(
@@ -174,6 +206,9 @@ def test_run_clipboard_command_uses_backend_command_for(monkeypatch) -> None:
     tool.get_clipboard()
 
     assert seen_commands == [["copy-cmd"], ["paste-cmd"]]
+    assert seen_capture_output == [None, True]
+    assert seen_stdout == [subprocess.DEVNULL, None]
+    assert seen_stderr == [subprocess.DEVNULL, None]
 
 
 def test_run_command_uses_configured_timeout(monkeypatch) -> None:
@@ -470,6 +505,179 @@ def test_write_alias(monkeypatch) -> None:
     tool.write("hello")
 
     assert calls == [("type", "hello")]
+
+
+def test_type_prefers_wtype_for_unicode_when_available(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_which(name: str) -> str | None:
+        mapping = {"ydotool": "/usr/bin/ydotool", "wtype": "/usr/bin/wtype"}
+        return mapping.get(name)
+
+    monkeypatch.setattr("py_ydotool.text_input.shutil.which", fake_which)
+    monkeypatch.setattr(PyYDoTool, "_clipboard_is_available", lambda self: True)
+
+    def fake_run(self: PyYDoTool, *args: str) -> CompletedProcess[str]:
+        calls.append(("run", args))
+        return CompletedProcess(["ydotool", *args], 0, "", "")
+
+    def fake_run_command(self: PyYDoTool, command: list[str], **_: object) -> CompletedProcess[str]:
+        calls.append(("command", tuple(command)))
+        return CompletedProcess(command, 0, "", "")
+
+    def fake_paste_text(self: PyYDoTool, text: str) -> None:
+        calls.append(("paste_text", (text,)))
+
+    monkeypatch.setattr(PyYDoTool, "_run", fake_run)
+    monkeypatch.setattr(PyYDoTool, "_run_command", fake_run_command)
+    monkeypatch.setattr(PyYDoTool, "paste_text", fake_paste_text)
+
+    tool = PyYDoTool(check_commands_on_init=False, type_delay_ms=12)
+    tool.type("こんにちは")
+
+    assert calls == [("command", ("wtype", "-d", "12", "こんにちは"))]
+
+
+def test_type_prefers_direct_backend_for_ascii_even_when_clipboard_available(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr("py_ydotool.text_input.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(PyYDoTool, "_clipboard_is_available", lambda self: True)
+
+    def fake_run(self: PyYDoTool, *args: str) -> CompletedProcess[str]:
+        calls.append(args)
+        return CompletedProcess(["ydotool", *args], 0, "", "")
+
+    monkeypatch.setattr(PyYDoTool, "_run", fake_run)
+
+    tool = PyYDoTool(check_commands_on_init=False, type_delay_ms=12)
+    tool.type("hello")
+
+    assert calls == [("type", "--key-delay", "12", "hello")]
+
+
+def test_type_with_explicit_paste_backend_uses_paste_text(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr("py_ydotool.text_input.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(PyYDoTool, "_clipboard_is_available", lambda self: True)
+
+    def fake_run(self: PyYDoTool, *args: str) -> CompletedProcess[str]:
+        calls.append(("run", args))
+        return CompletedProcess(["ydotool", *args], 0, "", "")
+
+    def fake_paste_text(self: PyYDoTool, text: str) -> None:
+        calls.append(("paste_text", text))
+
+    monkeypatch.setattr(PyYDoTool, "_run", fake_run)
+    monkeypatch.setattr(PyYDoTool, "paste_text", fake_paste_text)
+
+    tool = PyYDoTool(check_commands_on_init=False, text_backend="paste", type_delay_ms=30)
+    tool.type("hello")
+
+    assert calls == [("paste_text", "hello")]
+
+
+def test_type_with_explicit_wtype_backend_uses_direct_command(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_which(name: str) -> str | None:
+        mapping = {"wtype": "/usr/bin/wtype"}
+        return mapping.get(name)
+
+    monkeypatch.setattr("py_ydotool.text_input.shutil.which", fake_which)
+    monkeypatch.setattr(PyYDoTool, "_clipboard_is_available", lambda self: False)
+
+    def fake_run_command(self: PyYDoTool, command: list[str], **_: object) -> CompletedProcess[str]:
+        calls.append(("command", tuple(command)))
+        return CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(PyYDoTool, "_run_command", fake_run_command)
+
+    tool = PyYDoTool(check_commands_on_init=False, text_backend="wtype", type_delay_ms=9)
+    tool.type("こんにちは")
+
+    assert calls == [("command", ("wtype", "-d", "9", "こんにちは"))]
+
+
+def test_type_falls_back_to_paste_for_unicode_when_direct_backends_are_missing(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr("py_ydotool.text_input.shutil.which", lambda name: None)
+    monkeypatch.setattr(PyYDoTool, "_clipboard_is_available", lambda self: True)
+
+    def fake_paste_text(self: PyYDoTool, text: str) -> None:
+        calls.append(("paste_text", text))
+
+    monkeypatch.setattr(PyYDoTool, "paste_text", fake_paste_text)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+    tool.type("こんにちは")
+
+    assert calls == [("paste_text", "こんにちは")]
+
+
+def test_type_raises_when_unicode_requires_direct_or_clipboard_backend(monkeypatch) -> None:
+    monkeypatch.setattr("py_ydotool.text_input.shutil.which", lambda name: None)
+    monkeypatch.setattr(PyYDoTool, "_clipboard_is_available", lambda self: False)
+
+    tool = PyYDoTool(check_commands_on_init=False)
+
+    with pytest.raises(TextInputUnavailableError, match="Unicode-capable"):
+        tool.type("こんにちは")
+
+
+def test_type_strict_text_timing_raises_when_paste_fallback_would_ignore_delay(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("py_ydotool.text_input.shutil.which", lambda name: None)
+    monkeypatch.setattr(PyYDoTool, "_clipboard_is_available", lambda self: True)
+
+    tool = PyYDoTool(check_commands_on_init=False, type_delay_ms=30, strict_text_timing=True)
+
+    with pytest.raises(TextInputUnavailableError, match="Per-character timing requires"):
+        tool.type("こんにちは")
+
+
+def test_type_allows_paste_fallback_with_zero_delay_even_in_strict_mode(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr("py_ydotool.text_input.shutil.which", lambda name: None)
+    monkeypatch.setattr(PyYDoTool, "_clipboard_is_available", lambda self: True)
+
+    def fake_paste_text(self: PyYDoTool, text: str) -> None:
+        calls.append(("paste_text", text))
+
+    monkeypatch.setattr(PyYDoTool, "paste_text", fake_paste_text)
+
+    tool = PyYDoTool(check_commands_on_init=False, strict_text_timing=True)
+    tool.type("こんにちは")
+
+    assert calls == [("paste_text", "こんにちは")]
+
+
+def test_type_or_paste_strict_text_timing_rejects_paste_path(monkeypatch) -> None:
+    monkeypatch.setattr("py_ydotool.text_input.shutil.which", lambda name: None)
+    monkeypatch.setattr(PyYDoTool, "_clipboard_is_available", lambda self: True)
+
+    tool = PyYDoTool(check_commands_on_init=False, type_delay_ms=20, strict_text_timing=True)
+
+    with pytest.raises(TextInputUnavailableError, match="Per-character timing requires"):
+        tool.type_or_paste("hello\nworld")
+
+
+def test_init_accepts_explicit_wtype_without_ydotool_when_checks_enabled(
+    monkeypatch,
+) -> None:
+    def fake_which(name: str) -> str | None:
+        mapping = {"wtype": "/usr/bin/wtype"}
+        return mapping.get(name)
+
+    monkeypatch.setattr("py_ydotool.client.shutil.which", fake_which)
+
+    tool = PyYDoTool(text_backend="wtype")
+
+    assert tool.text_backend == "wtype"
 
 
 def test_type_or_paste_prefers_type_for_short_text(monkeypatch) -> None:
@@ -1031,8 +1239,10 @@ def test_copy_calls_backend_command(monkeypatch) -> None:
         command: list[str],
         *,
         input_text: str | None = None,
+        capture_output: bool = True,
     ) -> CompletedProcess[str]:
         calls.append((command, input_text))
+        assert capture_output is False
         return CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(PyYDoTool, "_get_clipboard_backend", fake_get_clipboard_backend)
@@ -1057,7 +1267,9 @@ def test_get_clipboard_returns_stdout(monkeypatch) -> None:
         command: list[str],
         *,
         input_text: str | None = None,
+        capture_output: bool = True,
     ) -> CompletedProcess[str]:
+        assert capture_output is True
         return CompletedProcess(command, 0, "clipboard text", "")
 
     monkeypatch.setattr(PyYDoTool, "_get_clipboard_backend", fake_get_clipboard_backend)
@@ -1068,7 +1280,7 @@ def test_get_clipboard_returns_stdout(monkeypatch) -> None:
     assert tool.get_clipboard() == "clipboard text"
 
 
-def test_paste_text_uses_copy_and_hotkey(monkeypatch) -> None:
+def test_paste_text_uses_copy_and_hotkey_without_restore(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
     def fake_copy(self: PyYDoTool, text: str) -> None:
@@ -1080,12 +1292,80 @@ def test_paste_text_uses_copy_and_hotkey(monkeypatch) -> None:
     monkeypatch.setattr(PyYDoTool, "copy", fake_copy)
     monkeypatch.setattr(PyYDoTool, "hotkey", fake_hotkey)
 
-    tool = PyYDoTool(check_commands_on_init=False)
+    tool = PyYDoTool(check_commands_on_init=False, restore_clipboard=False)
     tool.paste_text("hello")
 
     assert calls == [
         ("copy", "hello"),
         ("hotkey", (Key.CTRL, Key.V)),
+    ]
+
+
+def test_paste_text_restores_clipboard_after_paste(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_get_clipboard(self: PyYDoTool) -> str:
+        calls.append(("get_clipboard", None))
+        return "before"
+
+    def fake_copy(self: PyYDoTool, text: str) -> None:
+        calls.append(("copy", text))
+
+    def fake_hotkey(self: PyYDoTool, *keycodes: int) -> None:
+        calls.append(("hotkey", keycodes))
+
+    def fake_sleep(seconds: float) -> None:
+        calls.append(("sleep", seconds))
+
+    monkeypatch.setattr(PyYDoTool, "get_clipboard", fake_get_clipboard)
+    monkeypatch.setattr(PyYDoTool, "copy", fake_copy)
+    monkeypatch.setattr(PyYDoTool, "hotkey", fake_hotkey)
+    monkeypatch.setattr("py_ydotool.client.time.sleep", fake_sleep)
+
+    tool = PyYDoTool(check_commands_on_init=False, paste_settle_delay=0.02)
+    tool.paste_text("hello")
+
+    assert calls == [
+        ("get_clipboard", None),
+        ("copy", "hello"),
+        ("hotkey", (Key.CTRL, Key.V)),
+        ("sleep", 0.02),
+        ("copy", "before"),
+    ]
+
+
+def test_paste_text_restores_clipboard_immediately_after_paste_failure(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_get_clipboard(self: PyYDoTool) -> str:
+        calls.append(("get_clipboard", None))
+        return "before"
+
+    def fake_copy(self: PyYDoTool, text: str) -> None:
+        calls.append(("copy", text))
+
+    def fake_hotkey(self: PyYDoTool, *keycodes: int) -> None:
+        calls.append(("hotkey", keycodes))
+        raise RuntimeError("paste failed")
+
+    def fake_sleep(seconds: float) -> None:
+        calls.append(("sleep", seconds))
+
+    monkeypatch.setattr(PyYDoTool, "get_clipboard", fake_get_clipboard)
+    monkeypatch.setattr(PyYDoTool, "copy", fake_copy)
+    monkeypatch.setattr(PyYDoTool, "hotkey", fake_hotkey)
+    monkeypatch.setattr("py_ydotool.client.time.sleep", fake_sleep)
+
+    tool = PyYDoTool(check_commands_on_init=False, paste_settle_delay=0.02)
+
+    with pytest.raises(RuntimeError, match="paste failed"):
+        tool.paste_text("hello")
+
+    assert calls == [
+        ("get_clipboard", None),
+        ("copy", "hello"),
+        ("hotkey", (Key.CTRL, Key.V)),
+        ("copy", "before"),
     ]
 
 
@@ -1101,6 +1381,20 @@ def test_paste_uses_hotkey(monkeypatch) -> None:
     tool.paste()
 
     assert calls == [(Key.CTRL, Key.V)]
+
+
+def test_paste_uses_custom_shortcut(monkeypatch) -> None:
+    calls: list[tuple[int, ...]] = []
+
+    def fake_hotkey(self: PyYDoTool, *keycodes: int) -> None:
+        calls.append(keycodes)
+
+    monkeypatch.setattr(PyYDoTool, "hotkey", fake_hotkey)
+
+    tool = PyYDoTool(check_commands_on_init=False, paste_shortcut=(Key.LEFT_SHIFT, Key.INSERT))
+    tool.paste()
+
+    assert calls == [(Key.LEFT_SHIFT, Key.INSERT)]
 
 
 def test_select_all_uses_hotkey(monkeypatch) -> None:

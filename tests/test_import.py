@@ -7,10 +7,14 @@ from py_ydotool import (
     DoctorReport,
     PyYDoTool,
     SetupPlan,
+    TextInputBackend,
+    TextInputUnavailableError,
     YDoToolDaemon,
     __version__,
     available_clipboard_backends,
+    available_text_backends,
     collect_doctor_report,
+    detect_text_backend,
     render_doctor_report,
 )
 
@@ -44,3 +48,10 @@ def test_system_helpers_export() -> None:
 
 def test_clipboard_helpers_export() -> None:
     assert available_clipboard_backends is not None
+
+
+def test_text_input_helpers_export() -> None:
+    assert TextInputBackend is not None
+    assert TextInputUnavailableError is not None
+    assert available_text_backends is not None
+    assert detect_text_backend is not None

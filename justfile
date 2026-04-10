@@ -4,39 +4,39 @@ default:
   @just --list
 
 sync:
-  uv sync
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv sync
 
 fmt:
-  uv run ruff format .
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run ruff format .
 
 lint:
-  uv run ruff check .
-  uv run ruff format --check .
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run ruff check .
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run ruff format --check .
 
 fix:
-  uv run ruff check --fix .
-  uv run ruff format .
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run ruff check --fix .
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run ruff format .
 
 test:
-  uv run pytest -m "not integration"
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run pytest -m "not integration"
 
 test-integration:
-  PY_YDOTOOL_RUN_INTEGRATION=1 uv run pytest -m integration
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" PY_YDOTOOL_RUN_INTEGRATION=1 uv run pytest -m integration
 
 doctor:
-  uv run python -m py_ydotool doctor
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run python -m py_ydotool doctor
 
 doctor-strict:
-  uv run python -m py_ydotool doctor --strict
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run python -m py_ydotool doctor --strict
 
 doctor-json:
-  uv run python -m py_ydotool doctor --json
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run python -m py_ydotool doctor --json
 
 doctor-strict-json:
-  uv run python -m py_ydotool doctor --json --strict
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run python -m py_ydotool doctor --json --strict
 
 setup-dry-run:
-  uv run python -m py_ydotool setup --dry-run
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv run python -m py_ydotool setup --dry-run
 
 check:
   just fix
@@ -48,13 +48,13 @@ ci:
   just test
 
 version:
-  PYTHONDONTWRITEBYTECODE=1 uv run python scripts/check_version.py --print
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" PYTHONDONTWRITEBYTECODE=1 uv run python scripts/check_version.py --print
 
 version-check:
-  PYTHONDONTWRITEBYTECODE=1 uv run python scripts/check_version.py
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" PYTHONDONTWRITEBYTECODE=1 uv run python scripts/check_version.py
 
 set-version version:
-  PYTHONDONTWRITEBYTECODE=1 uv run python scripts/set_version.py {{version}}
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" PYTHONDONTWRITEBYTECODE=1 uv run python scripts/set_version.py {{version}}
 
 release-version version:
   just set-version {{version}}
@@ -63,10 +63,10 @@ release-version version:
   just tag-version
 
 tag-version:
-  PYTHONDONTWRITEBYTECODE=1 uv run python scripts/tag_version.py
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" PYTHONDONTWRITEBYTECODE=1 uv run python scripts/tag_version.py
 
 build:
-  uv build
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv build
 
 release-check: version-check ci build
 
@@ -74,5 +74,5 @@ hooks-install:
   lefthook install
 
 setup:
-  uv sync
+  MISE_TRUSTED_CONFIG_PATHS="$PWD/mise.toml" uv sync
   lefthook install

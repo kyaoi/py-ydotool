@@ -20,6 +20,7 @@ from ._system import (
 from .client import MouseButton, PyYDoTool
 from .clipboard import supported_clipboard_backend_names
 from .keys import Key
+from .text_input import supported_text_backend_names
 
 _ROOT_DESCRIPTION = (
     "Small CLI helpers for py-ydotool setup, environment diagnosis, and "
@@ -45,8 +46,12 @@ _SETUP_EPILOG = """Examples:
 
 _TYPE_EPILOG = """Examples:
   py-ydotool type "hello"
+  py-ydotool type "こんにちは"
+  py-ydotool type "こんにちは" --text-backend wtype
+  py-ydotool type "こんにちは" --text-backend eitype
+  py-ydotool type "こんにちは" --text-backend paste --backend wl-clipboard
   py-ydotool type "hello" --type-delay-ms 15
-  py-ydotool type "hello" --no-daemon
+  py-ydotool type "こんにちは" --type-delay-ms 15 --strict-text-timing
 """
 
 _PRESS_EPILOG = """Examples:
@@ -106,12 +111,14 @@ _GET_CLIPBOARD_EPILOG = """Examples:
 
 _PASTE_EPILOG = """Examples:
   py-ydotool paste
+  py-ydotool paste --paste-shortcut SHIFT INSERT
   py-ydotool paste --no-daemon
 """
 
 _PASTE_TEXT_EPILOG = """Examples:
   py-ydotool paste-text "hello"
   py-ydotool paste-text "hello" --backend xsel
+  py-ydotool paste-text "hello" --no-restore-clipboard
 """
 
 _BUTTON_ALIASES = {
@@ -128,6 +135,8 @@ _BUTTON_ALIASES = {
 
 _SUPPORTED_CLIPBOARD_BACKEND_NAMES = supported_clipboard_backend_names()
 _SUPPORTED_CLIPBOARD_BACKENDS_TEXT = ", ".join(_SUPPORTED_CLIPBOARD_BACKEND_NAMES)
+_SUPPORTED_TEXT_BACKEND_NAMES = supported_text_backend_names()
+_SUPPORTED_TEXT_BACKENDS_TEXT = ", ".join(("auto", *_SUPPORTED_TEXT_BACKEND_NAMES))
 
 
 def _non_empty_cli_text(name: str) -> Callable[[str], str]:
@@ -221,8 +230,103 @@ def _add_type_delay_option(parser: argparse.ArgumentParser) -> None:
         "--type-delay-ms",
         default=0,
         type=_non_negative_int_cli_value("type_delay_ms"),
-        help="Delay between typed characters in milliseconds (default: %(default)s)",
+        help=(
+            "Delay between typed characters in milliseconds for direct typing "
+            "backends (default: %(default)s)"
+        ),
     )
+
+
+def _keycode_cli_value(token: str) -> int:
+    try:
+        return _parse_keycode_token(token)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _text_backend_cli_value(value: str) -> str:
+    backend = _non_empty_cli_text("text_backend")(value).strip().lower()
+    if backend == "auto" or backend in _SUPPORTED_TEXT_BACKEND_NAMES:
+        return backend
+    raise argparse.ArgumentTypeError(
+        f"unknown text backend: {value!r}. Supported backends: {_SUPPORTED_TEXT_BACKENDS_TEXT}"
+    )
+
+
+def _add_text_backend_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--text-backend",
+        default="auto",
+        type=_text_backend_cli_value,
+        help=(
+            "Text backend to force instead of auto-selection. "
+            f"Supported backends: {_SUPPORTED_TEXT_BACKENDS_TEXT}."
+        ),
+    )
+
+
+def _add_restore_clipboard_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-restore-clipboard",
+        action="store_true",
+        help=("Do not restore the previous text clipboard after a clipboard-backed paste"),
+    )
+
+
+def _add_strict_text_timing_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--strict-text-timing",
+        action="store_true",
+        help="Fail instead of using clipboard-backed paste when type_delay_ms cannot be honored",
+    )
+
+
+def _add_paste_settle_delay_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--paste-settle-delay",
+        default=0.05,
+        type=_non_negative_real_number_cli_value("paste_settle_delay"),
+        help=(
+            "How long to wait before restoring the previous clipboard after a "
+            "clipboard-backed paste (default: %(default)s)"
+        ),
+    )
+
+
+def _add_paste_shortcut_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--paste-shortcut",
+        nargs="+",
+        default=None,
+        type=_keycode_cli_value,
+        metavar="KEY",
+        help=(
+            "Paste shortcut to send instead of Ctrl+V. Use key names like CTRL SHIFT V "
+            "or numeric keycodes."
+        ),
+    )
+
+
+def _add_text_runtime_options(
+    parser: argparse.ArgumentParser,
+    *,
+    include_text_backend: bool = False,
+    include_clipboard_backend: bool = False,
+    include_paste_contract: bool = False,
+    include_paste_shortcut: bool = False,
+    include_strict_text_timing: bool = False,
+) -> None:
+    if include_text_backend:
+        _add_text_backend_option(parser)
+    if include_strict_text_timing:
+        _add_strict_text_timing_option(parser)
+    if include_clipboard_backend:
+        _add_clipboard_backend_option(parser)
+    if include_paste_contract:
+        _add_restore_clipboard_option(parser)
+        _add_paste_settle_delay_option(parser)
+    if include_paste_shortcut:
+        _add_paste_shortcut_option(parser)
 
 
 def _clipboard_backend_cli_value(value: str) -> str:
@@ -253,14 +357,24 @@ def _add_tool_options(
     include_socket_path: bool = True,
     include_type_delay: bool = False,
     include_clipboard_backend: bool = False,
+    include_text_backend: bool = False,
+    include_paste_contract: bool = False,
+    include_paste_shortcut: bool = False,
+    include_strict_text_timing: bool = False,
 ) -> None:
     if include_socket_path:
         _add_socket_option(parser)
     _add_command_timeout_option(parser)
     if include_type_delay:
         _add_type_delay_option(parser)
-    if include_clipboard_backend:
-        _add_clipboard_backend_option(parser)
+    _add_text_runtime_options(
+        parser,
+        include_text_backend=include_text_backend,
+        include_clipboard_backend=include_clipboard_backend,
+        include_paste_contract=include_paste_contract,
+        include_paste_shortcut=include_paste_shortcut,
+        include_strict_text_timing=include_strict_text_timing,
+    )
 
 
 def _add_daemon_options(parser: argparse.ArgumentParser) -> None:
@@ -322,11 +436,19 @@ def _add_runtime_options(
     *,
     include_type_delay: bool = False,
     include_clipboard_backend: bool = False,
+    include_text_backend: bool = False,
+    include_paste_contract: bool = False,
+    include_paste_shortcut: bool = False,
+    include_strict_text_timing: bool = False,
 ) -> None:
     _add_tool_options(
         parser,
         include_type_delay=include_type_delay,
         include_clipboard_backend=include_clipboard_backend,
+        include_text_backend=include_text_backend,
+        include_paste_contract=include_paste_contract,
+        include_paste_shortcut=include_paste_shortcut,
+        include_strict_text_timing=include_strict_text_timing,
     )
     _add_daemon_options(parser)
 
@@ -341,10 +463,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser(
         "doctor",
-        help="Inspect the current ydotool/uinput setup",
+        help="Inspect the current ydotool/uinput setup and text input helpers",
         description=(
             "Inspect the current py-ydotool environment and explain what is missing for "
-            "normal non-root usage."
+            "normal non-root usage, clipboard helpers, and high-level text input."
         ),
         epilog=_DOCTOR_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -437,14 +559,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "type",
         help="Type a text string with py-ydotool",
         description=(
-            "Type text through ydotool, optionally auto-starting ydotoold for "
-            "this one-shot command."
+            "Type text through the selected text backend, optionally auto-starting "
+            "ydotoold for this one-shot command."
         ),
         epilog=_TYPE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     type_parser.add_argument("text", type=str, help="Text to type")
-    _add_runtime_options(type_parser, include_type_delay=True)
+    _add_runtime_options(
+        type_parser,
+        include_type_delay=True,
+        include_clipboard_backend=True,
+        include_text_backend=True,
+        include_paste_contract=True,
+        include_paste_shortcut=True,
+        include_strict_text_timing=True,
+    )
 
     press = subparsers.add_parser(
         "press",
@@ -672,7 +802,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "paste",
         help="Send the paste hotkey",
         description=(
-            "Send the usual Ctrl+V paste hotkey through ydotool, optionally "
+            "Send the usual Ctrl+V paste hotkey by default, or a configured paste "
+            "shortcut through ydotool, optionally "
             "auto-starting ydotoold for this one-shot command. This does not "
             "modify clipboard contents first; use paste-text when you want copy "
             "+ paste in one step."
@@ -680,21 +811,27 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=_PASTE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    _add_runtime_options(paste)
+    _add_runtime_options(paste, include_paste_shortcut=True)
 
     paste_text = subparsers.add_parser(
         "paste-text",
         help="Copy text, then send the paste hotkey",
         description=(
             "Copy text to the system clipboard with the selected backend, then "
-            "send the usual Ctrl+V paste hotkey through ydotool, optionally "
+            "send the usual Ctrl+V paste hotkey by default, or a configured paste "
+            "shortcut through ydotool, optionally "
             "auto-starting ydotoold for this one-shot command."
         ),
         epilog=_PASTE_TEXT_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     paste_text.add_argument("text", type=str, help="Text to copy and paste")
-    _add_runtime_options(paste_text, include_clipboard_backend=True)
+    _add_runtime_options(
+        paste_text,
+        include_clipboard_backend=True,
+        include_paste_contract=True,
+        include_paste_shortcut=True,
+    )
 
     return parser
 
@@ -871,6 +1008,16 @@ def _tool_from_args(args: argparse.Namespace) -> PyYDoTool:
         kwargs["type_delay_ms"] = args.type_delay_ms
     if hasattr(args, "backend"):
         kwargs["clipboard_backend"] = args.backend
+    if hasattr(args, "text_backend") and args.text_backend not in {None, "auto"}:
+        kwargs["text_backend"] = args.text_backend
+    if hasattr(args, "strict_text_timing"):
+        kwargs["strict_text_timing"] = args.strict_text_timing
+    if hasattr(args, "no_restore_clipboard"):
+        kwargs["restore_clipboard"] = not args.no_restore_clipboard
+    if hasattr(args, "paste_settle_delay"):
+        kwargs["paste_settle_delay"] = args.paste_settle_delay
+    if hasattr(args, "paste_shortcut") and args.paste_shortcut is not None:
+        kwargs["paste_shortcut"] = tuple(args.paste_shortcut)
     return PyYDoTool(**kwargs)
 
 

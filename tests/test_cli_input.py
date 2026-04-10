@@ -297,6 +297,84 @@ def test_cli_copy_rejects_unknown_backend(capsys: pytest.CaptureFixture[str]) ->
     assert "Supported backends: wl-clipboard, xclip, xsel" in stderr
 
 
+def test_cli_type_forwards_text_backend_and_paste_contract_options(
+    fake_tool_factory,
+) -> None:
+    exit_code = cli.main(
+        [
+            "type",
+            "こんにちは",
+            "--text-backend",
+            "paste",
+            "--backend",
+            "wl-clipboard",
+            "--strict-text-timing",
+            "--no-restore-clipboard",
+            "--paste-settle-delay",
+            "0.2",
+            "--paste-shortcut",
+            "SHIFT",
+            "INSERT",
+        ]
+    )
+
+    assert exit_code == 0
+    tool = _last_tool(fake_tool_factory)
+    assert tool.kwargs["text_backend"] == "paste"
+    assert tool.kwargs["clipboard_backend"] == "wl-clipboard"
+    assert tool.kwargs["strict_text_timing"] is True
+    assert tool.kwargs["restore_clipboard"] is False
+    assert tool.kwargs["paste_settle_delay"] == 0.2
+    assert tool.kwargs["paste_shortcut"] == (Key.LEFT_SHIFT, Key.INSERT)
+    assert tool.calls[-1] == ("type", "こんにちは")
+
+
+def test_cli_paste_forwards_custom_paste_shortcut(fake_tool_factory) -> None:
+    exit_code = cli.main(["paste", "--paste-shortcut", "SHIFT", "INSERT"])
+
+    assert exit_code == 0
+    tool = _last_tool(fake_tool_factory)
+    assert tool.kwargs["paste_shortcut"] == (Key.LEFT_SHIFT, Key.INSERT)
+    assert tool.calls[-1] == ("paste",)
+
+
+def test_cli_paste_text_forwards_paste_contract_options(
+    fake_tool_factory,
+) -> None:
+    exit_code = cli.main(
+        [
+            "paste-text",
+            "hello",
+            "--backend",
+            "xsel",
+            "--no-restore-clipboard",
+            "--paste-settle-delay",
+            "0.2",
+            "--paste-shortcut",
+            "SHIFT",
+            "INSERT",
+        ]
+    )
+
+    assert exit_code == 0
+    tool = _last_tool(fake_tool_factory)
+    assert tool.kwargs["clipboard_backend"] == "xsel"
+    assert tool.kwargs["restore_clipboard"] is False
+    assert tool.kwargs["paste_settle_delay"] == 0.2
+    assert tool.kwargs["paste_shortcut"] == (Key.LEFT_SHIFT, Key.INSERT)
+    assert tool.calls[-1] == ("paste_text", "hello")
+
+
+def test_cli_type_rejects_unknown_text_backend(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["type", "hello", "--text-backend", "banana"])
+
+    assert excinfo.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "unknown text backend" in stderr
+    assert "Supported backends: auto, ydotool, wtype, eitype, paste" in stderr
+
+
 def test_cli_press_rejects_interval_with_hotkey() -> None:
     with pytest.raises(SystemExit) as excinfo:
         cli.main(["press", "CTRL", "V", "--hotkey", "--interval", "0.2"])

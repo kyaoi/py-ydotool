@@ -15,16 +15,24 @@ from types import TracebackType
 from typing import TYPE_CHECKING, TextIO
 
 from .clipboard import ClipboardBackend, ClipboardOperation, detect_clipboard_backend
+from .text_input import (
+    TextInputBackend,
+    detect_text_backend,
+    direct_text_backends,
+    get_text_backend,
+)
 
 if TYPE_CHECKING:
     from ._system import DoctorReport, SetupPlan, SystemPaths
 
 from .exceptions import (
+    ClipboardUnavailableError,
     CommandExecutionError,
     CommandNotFoundError,
     CommandTimeoutError,
     DaemonReadyTimeoutError,
     DaemonStartError,
+    TextInputUnavailableError,
 )
 
 
@@ -195,6 +203,21 @@ def _normalize_repeat(name: str, value: int | None) -> int | None:
 
 def _normalize_keycodes(keycodes: Iterable[int]) -> list[int]:
     return [_require_non_negative_int("keycode", keycode) for keycode in keycodes]
+
+
+def _default_paste_shortcut() -> tuple[int, ...]:
+    from .keys import Key
+
+    return (Key.CTRL, Key.V)
+
+
+def _normalize_paste_shortcut(keycodes: Iterable[int] | None) -> tuple[int, ...]:
+    if keycodes is None:
+        return _default_paste_shortcut()
+    normalized = tuple(_normalize_keycodes(keycodes))
+    if not normalized:
+        raise ValueError("paste_shortcut must not be empty")
+    return normalized
 
 
 def _normalize_mouse_button(button: str) -> str:
@@ -578,9 +601,15 @@ class PyYDoTool:
     check_commands_on_init: bool = True
     type_delay_ms: int = 0
     clipboard_backend: str | None = None
+    text_backend: str | None = None
+    strict_text_timing: bool = False
+    restore_clipboard: bool = True
+    paste_settle_delay: float = 0.05
+    paste_shortcut: tuple[int, ...] | None = None
     command_timeout: float | None = 5.0
     _env: dict[str, str] = field(init=False, repr=False)
     _clipboard: ClipboardBackend | None = field(init=False, repr=False, default=None)
+    _text_input: TextInputBackend | None = field(init=False, repr=False, default=None)
     _active_daemons: list[YDoToolDaemon] = field(init=False, repr=False, default_factory=list)
 
     def __post_init__(self) -> None:
@@ -589,6 +618,23 @@ class PyYDoTool:
             "clipboard_backend",
             self.clipboard_backend,
         )
+        self.text_backend = _normalize_optional_text(
+            "text_backend",
+            self.text_backend,
+        )
+        self.strict_text_timing = _require_bool(
+            "strict_text_timing",
+            self.strict_text_timing,
+        )
+        self.restore_clipboard = _require_bool(
+            "restore_clipboard",
+            self.restore_clipboard,
+        )
+        self.paste_settle_delay = _require_non_negative(
+            "paste_settle_delay",
+            self.paste_settle_delay,
+        )
+        self.paste_shortcut = _normalize_paste_shortcut(self.paste_shortcut)
         self._env = os.environ.copy()
         self._env["YDOTOOL_SOCKET"] = self.socket_path
         self.type_delay_ms = _require_non_negative_int(
@@ -602,13 +648,19 @@ class PyYDoTool:
         )
 
         if self.check_commands_on_init:
-            self._ensure_command("ydotool")
+            self._ensure_primary_commands()
 
     def _ensure_command(self, name: str) -> None:
         if shutil.which(name) is None:
             raise CommandNotFoundError(
                 f"Required command not found: {name}{_missing_command_help(name)}"
             )
+
+    def _ensure_primary_commands(self) -> None:
+        if self.text_backend in {"wtype", "eitype"}:
+            self._ensure_command(self.text_backend)
+            return
+        self._ensure_command("ydotool")
 
     def _register_daemon_context(self, daemon: YDoToolDaemon) -> None:
         if daemon not in self._active_daemons:
@@ -634,18 +686,23 @@ class PyYDoTool:
         timeout: float | None = None,
         missing_command_name: str,
         error_prefix: str,
+        capture_output: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         resolved_timeout = _resolve_timeout(self.command_timeout, timeout)
+        run_kwargs: dict[str, object] = {
+            "text": True,
+            "input": input_text,
+            "check": True,
+            "env": self._env,
+            "timeout": resolved_timeout,
+        }
+        if capture_output:
+            run_kwargs["capture_output"] = True
+        else:
+            run_kwargs["stdout"] = subprocess.DEVNULL
+            run_kwargs["stderr"] = subprocess.DEVNULL
         try:
-            return subprocess.run(
-                command,
-                text=True,
-                input=input_text,
-                capture_output=True,
-                check=True,
-                env=self._env,
-                timeout=resolved_timeout,
-            )
+            return subprocess.run(command, **run_kwargs)
         except subprocess.TimeoutExpired as exc:
             cmd = exc.cmd if isinstance(exc.cmd, list) else [str(exc.cmd)]
             raise CommandTimeoutError(
@@ -684,6 +741,7 @@ class PyYDoTool:
         *,
         input_text: str | None = None,
         timeout: float | None = None,
+        capture_output: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         return self._run_subprocess(
             command,
@@ -691,6 +749,7 @@ class PyYDoTool:
             timeout=timeout,
             missing_command_name=command[0],
             error_prefix="command",
+            capture_output=capture_output,
         )
 
     def _get_clipboard_backend(self) -> ClipboardBackend:
@@ -707,9 +766,88 @@ class PyYDoTool:
     ) -> subprocess.CompletedProcess[str]:
         backend = self._get_clipboard_backend()
         command = backend.command_for(operation)
+        capture_output = operation == "paste"
         if timeout is None:
-            return self._run_command(command, input_text=input_text)
-        return self._run_command(command, input_text=input_text, timeout=timeout)
+            return self._run_command(
+                command,
+                input_text=input_text,
+                capture_output=capture_output,
+            )
+        return self._run_command(
+            command,
+            input_text=input_text,
+            timeout=timeout,
+            capture_output=capture_output,
+        )
+
+    def _clipboard_is_available(self) -> bool:
+        try:
+            self._get_clipboard_backend()
+        except ClipboardUnavailableError:
+            return False
+        return True
+
+    def _get_text_backend(self, text: str) -> TextInputBackend:
+        text = _require_text("text", text)
+        clipboard_available = self._clipboard_is_available()
+
+        if self.text_backend is not None:
+            return detect_text_backend(
+                self.text_backend,
+                clipboard_available=clipboard_available,
+            )
+
+        unicode_required = not text.isascii()
+        if not unicode_required and not self.check_commands_on_init:
+            return get_text_backend("ydotool")
+
+        if unicode_required:
+            preferred_direct = ("wtype", "eitype")
+        else:
+            preferred_direct = ("ydotool", "wtype", "eitype")
+
+        direct_candidates = {backend.name: backend for backend in direct_text_backends()}
+        for name in preferred_direct:
+            backend = direct_candidates[name]
+            if backend.is_available(clipboard_available=clipboard_available):
+                return backend
+
+        if clipboard_available:
+            return detect_text_backend("paste", clipboard_available=clipboard_available)
+
+        if unicode_required:
+            raise TextInputUnavailableError(
+                "No Unicode-capable text backend is available. Install wtype or eitype, "
+                "or enable a clipboard backend for paste fallback."
+            )
+
+        raise TextInputUnavailableError(
+            "No direct text backend is available. Install ydotool, wtype, or eitype, "
+            "or enable a clipboard backend for paste fallback."
+        )
+
+    def _ensure_text_timing_supported(self, backend: TextInputBackend) -> None:
+        if not self.strict_text_timing or self.type_delay_ms == 0:
+            return
+        if backend.supports_timing_per_char:
+            return
+        raise TextInputUnavailableError(
+            "Per-character timing requires a direct typing backend, but text input would use "
+            "clipboard-backed paste. Set type_delay_ms=0, install wtype or eitype, choose "
+            "a direct text backend, or disable strict_text_timing."
+        )
+
+    def _capture_clipboard_for_restore(self) -> str | None:
+        if not self.restore_clipboard:
+            return None
+        return self.get_clipboard()
+
+    def _restore_clipboard_after_paste(self, text: str | None) -> None:
+        if text is None:
+            return
+        if self.paste_settle_delay > 0:
+            time.sleep(self.paste_settle_delay)
+        self.copy(text)
 
     def daemon(
         self,
@@ -887,12 +1025,24 @@ class PyYDoTool:
             return None
 
     def type(self, text: str) -> None:
+        """Input text using the most appropriate backend for the given string.
+
+        ``type_delay_ms`` only applies to direct typing backends. When the
+        clipboard paste fallback is selected, the text is inserted atomically
+        and per-character timing is ignored unless ``strict_text_timing`` is
+        enabled, in which case the operation fails instead of pasting.
+        """
         text = _require_text("text", text)
-        args = ["type"]
-        if self.type_delay_ms > 0:
-            args.extend(["--key-delay", str(self.type_delay_ms)])
-        args.append(text)
-        self._run(*args)
+        backend = self._get_text_backend(text)
+        if backend.mode == "paste":
+            self._ensure_text_timing_supported(backend)
+            self.paste_text(text)
+            return
+        command = backend.command_for_text(text, delay_ms=self.type_delay_ms)
+        if backend.name == "ydotool":
+            self._run(*command[1:])
+            return
+        self._run_command(command)
 
     write = type
 
@@ -907,6 +1057,7 @@ class PyYDoTool:
         paste_threshold = _require_non_negative_int("paste_threshold", paste_threshold)
         prefer_paste = _require_bool("prefer_paste", prefer_paste)
         if prefer_paste or "\n" in text or len(text) >= paste_threshold:
+            self._ensure_text_timing_supported(get_text_backend("paste"))
             self.paste_text(text)
         else:
             self.write(text)
@@ -1144,14 +1295,33 @@ class PyYDoTool:
         return result.stdout
 
     def paste(self) -> None:
-        from .keys import Key
-
-        self.hotkey(Key.CTRL, Key.V)
+        """Send the configured paste shortcut."""
+        self.hotkey(*self.paste_shortcut)
 
     def paste_text(self, text: str) -> None:
+        """Paste text via the clipboard backend and configured paste shortcut.
+
+        When ``restore_clipboard`` is enabled, the current text clipboard is
+        captured before the paste operation and restored afterwards. The
+        restoration happens after ``paste_settle_delay`` seconds so the target
+        application has a small window to consume the pasted contents.
+        """
         text = _require_text("text", text)
-        self.copy(text)
-        self.paste()
+        original_clipboard: str | None = None
+        if self.restore_clipboard:
+            original_clipboard = self._capture_clipboard_for_restore()
+        try:
+            self.copy(text)
+            self.paste()
+        except Exception:
+            if original_clipboard is not None:
+                try:
+                    self.copy(original_clipboard)
+                except Exception:
+                    pass
+            raise
+        if original_clipboard is not None:
+            self._restore_clipboard_after_paste(original_clipboard)
 
     def select_all(self) -> None:
         from .keys import Key
